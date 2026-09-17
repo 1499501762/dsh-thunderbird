@@ -131,17 +131,17 @@ window.__ModuleLoader__.load({
 
     // ---- native right sidebar -------------------------------------------------
     // dsh-better-sidebar publishes `ctx.betterSidebar`, and an open carrying a
-    // `url` is routed to DSH's native right Sidebar. That makes the mail panel a
-    // real tab beside the conversation instead of a centre-column view that hides
-    // it — which is the whole point of a side panel.
-    function openInRightBar () {
+    // `url` is routed to DSH's native right Sidebar. The mail panel keeps living
+    // in the centre column; it is the AI block — the long text you want to read
+    // ALONGSIDE the mail — that is opened over there.
+    function openAiTab () {
       var sidebar = serviceOf(activeCtx, 'betterSidebar')
       if (sidebar === undefined || typeof sidebar.openTab !== 'function') return false
       try {
         sidebar.openTab({
           type: 'browser',
-          url: location.origin + UI_URL + '?panel=right',
-          title: LABEL,
+          url: location.origin + UI_URL + '?view=ai',
+          title: 'Thunderbird AI',
         })
         return true
       } catch (error) {
@@ -155,7 +155,7 @@ window.__ModuleLoader__.load({
         role: 'button',
         'data-dsh-no-drag': '',
         'aria-label': LABEL,
-        title: LABEL + '（在右侧边栏打开）',
+        title: LABEL,
       }, [
         el('span', { class: 'dshTbIcon', html: ICON_MAIL }),
         el('span', { class: 'dshTbLabel', text: LABEL }),
@@ -164,11 +164,8 @@ window.__ModuleLoader__.load({
       entry.addEventListener('click', function (event) {
         event.preventDefault()
         event.stopPropagation()
-        if (open) { closePanel(); return }
-        // Preferred home is the native right sidebar; the centre-column view is
-        // the fallback for a deployment without that plugin.
-        if (openInRightBar()) return
-        openPanel()
+        if (open) closePanel()
+        else openPanel()
       })
       return entry
     }
@@ -550,8 +547,17 @@ window.__ModuleLoader__.load({
               uiWorkspace: serviceOf(ctx, 'uiWorkspace') !== undefined,
               sessions: serviceOf(ctx, 'sessions') !== undefined,
               layout: serviceOf(ctx, 'layout') !== undefined,
+              betterSidebar: serviceOf(ctx, 'betterSidebar') !== undefined,
             },
           })
+          return
+        }
+
+        if (msg.type === 'panel/open-ai') {
+          var opened = openAiTab()
+          replyTo(event.source, msg.id, opened
+            ? { ok: true, result: true }
+            : { ok: false, error: '没有可用的右侧边栏插件（dsh-better-sidebar）' })
           return
         }
 

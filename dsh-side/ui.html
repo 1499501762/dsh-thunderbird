@@ -526,6 +526,24 @@
     color: var(--tb-text);
     border-color: color-mix(in srgb, var(--tb-accent) 42%, transparent);
   }
+  /* ---- AI-only surface (?view=ai) ----------------------------------------
+     This is the right-sidebar host for the AI block, and only for it: the mail
+     columns are not this tab's job. The panel keeps them; the long answer you
+     want to read WHILE looking at the mail lives here. */
+  html.ai-view .bar,
+  html.ai-view .body,
+  html.ai-view .foot,
+  html.ai-view #rules,
+  html.ai-view #sessions,
+  html.ai-view #compose,
+  html.ai-view #selmenu { display: none !important; }
+  html.ai-view #ai { flex: 1 1 auto; max-height: none; border-top: 0; box-shadow: none; }
+  html.ai-view .ai-head { padding: 12px 16px 10px; }
+  html.ai-view .ai-body { flex: 1 1 auto; padding: 14px 16px 20px; font-size: 13.5px; }
+  html.ai-view #ai-askrow { padding: 0 16px 10px; }
+  /* Reply/new-mail write into the panel's composer, which is in another tab. */
+  html.ai-view #ai-reply,
+  html.ai-view #ai-new { display: none !important; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -3197,6 +3215,83 @@ document.addEventListener('keydown', function (event) {
   else if (event.key === 'S') { event.preventDefault(); runAi('summarize') }
 })
 
+// ------------------------------------------------------------- AI 侧栏同步
+// The AI block can live in a native right-sidebar tab (?view=ai) so the answer
+// sits beside the mail instead of under it. The two surfaces are separate frames
+// of the same origin, so they sync over a BroadcastChannel rather than through
+// the shell: whoever has the content renders it, and a freshly opened tab asks
+// for the current state because it may have missed the last broadcast.
+var AI_VIEW = /(^|[?&])view=ai(&|$)/.test(String(location.search || ''))
+var aiBus = typeof BroadcastChannel === 'function' ? new BroadcastChannel('dsh-thunderbird-ai') : null
+var aiTabAskedAt = 0
+
+function aiSnapshot () {
+  return {
+    open: state.ai.open,
+    busy: state.ai.busy,
+    text: state.ai.text,
+    error: state.ai.error,
+    model: state.ai.model,
+    title: state.ai.title,
+    action: state.ai.action,
+    ask: state.ai.ask,
+    startedAt: state.ai.startedAt,
+    subject: state.current ? state.current.subject : '',
+    from: state.current ? state.current.author : '',
+  }
+}
+
+function applyAiSnapshot (snap) {
+  if (!snap) return
+  state.ai.open = snap.open !== false
+  state.ai.busy = snap.busy === true
+  state.ai.text = snap.text || ''
+  state.ai.error = snap.error || ''
+  state.ai.model = snap.model || ''
+  state.ai.title = snap.title || 'AI'
+  state.ai.action = snap.action || ''
+  state.ai.ask = snap.ask || null
+  state.ai.startedAt = snap.startedAt
+  state.ai.subject = snap.subject || ''
+  state.ai.from = snap.from || ''
+}
+
+function postAiState () {
+  if (!aiBus) return
+  try { aiBus.postMessage({ type: 'ai/state', state: aiSnapshot() }) } catch (error) { /* closed */ }
+}
+
+function openAiTab () {
+  if (AI_VIEW) return
+  var now = Date.now()
+  if (now - aiTabAskedAt < 2500) return
+  aiTabAskedAt = now
+  dshCall('panel/open-ai', {}, 20000).catch(function () { /* fall back to inline */ })
+}
+
+// Declared before use: calling openTab again only focuses the existing tab, so a
+// throttle is enough — no presence protocol is needed.
+if (aiBus) {
+  aiBus.onmessage = function (event) {
+    var msg = event.data
+    if (!msg || typeof msg.type !== 'string') return
+    if (msg.type === 'ai/state') {
+      if (AI_VIEW) { applyAiSnapshot(msg.state); renderAi() }
+      return
+    }
+    // A tab that just opened has no state yet: answer with whatever we hold.
+    if (msg.type === 'ai/ask' && !AI_VIEW) postAiState()
+  }
+  window.addEventListener('pagehide', function () { try { aiBus.close() } catch (error) { /* ignore */ } })
+}
+
+function mirrorAi () {
+  if (AI_VIEW) return
+  if (!state.aiRight) return
+  if (state.ai.open) openAiTab()
+  postAiState()
+}
+
 $('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
 $('btn-search').onclick = runSearch
 $('search').addEventListener('keydown', function (event) { if (event.key === 'Enter') runSearch() })
@@ -3356,6 +3451,38 @@ pollStatus()
 // Pull the durable mail-session records once at boot, so a thread already shows
 // its bound state before the user opens anything.
 loadSessions().then(function () { if (!$('sessions').hidden) renderSessions() })
+
+// ---------------------------------------------------------------- AI 侧栏 boot
+// Every renderAi() is followed by mirrorAi(), wrapped here instead of edited into
+// the function so the mirror stays one concern in one place.
+var baseRenderAi = renderAi
+renderAi = function () {
+  baseRenderAi()
+  try { mirrorAi() } catch (error) { /* the mirror must never break the pane */ }
+}
+
+if (AI_VIEW) {
+  // This frame IS the AI block: nothing else is rendered (see html.ai-view).
+  document.documentElement.classList.add('ai-view')
+  state.ai.open = true
+  state.ai.title = state.ai.title || 'AI'
+  renderAi()
+  // We may have opened after the last broadcast, so ask whoever holds the state.
+  if (aiBus) {
+    try { aiBus.postMessage({ type: 'ai/ask' }) } catch (error) { /* ignore */ }
+  }
+} else {
+  // Mirroring needs the BetterSidebar service, so ask the client half once and
+  // stay fully inline when it is absent.
+  var mirrorCss = document.createElement('style')
+  mirrorCss.textContent = 'html.ai-mirrored #ai .ai-body,html.ai-mirrored #ai #ai-askrow{display:none !important}'
+    + 'html.ai-mirrored #ai .ai-head::after{content:"内容在右侧边栏的 AI 标签里";color:var(--tb-text-dim);font-size:11.5px;margin-left:auto}'
+  document.head.appendChild(mirrorCss)
+  dshCall('ping', {}, 10000).then(function (info) {
+    state.aiRight = !!(info && info.betterSidebar && aiBus)
+    if (state.aiRight) document.documentElement.classList.add('ai-mirrored')
+  }).catch(function () { state.aiRight = false })
+}
 setInterval(mirrorTheme, 4000)
 setInterval(pollStatus, 5000)
 setInterval(pollEvents, 8000)
