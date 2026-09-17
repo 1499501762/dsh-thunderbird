@@ -570,10 +570,11 @@
   .compose {
     position: fixed;
     left: 50%;
-    bottom: 26px;
-    transform: translateX(-50%);
+    top: 50%;
+    bottom: auto;
+    transform: translate(-50%, -50%);
     width: min(900px, calc(100vw - 56px));
-    max-height: min(76vh, 760px);
+    max-height: calc(100vh - 48px);
     overflow: auto;
     z-index: 90;
     border: 1px solid var(--tb-glass-line);
@@ -613,10 +614,13 @@
   .ai, #rules, #sessions {
     position: fixed;
     left: 50%;
-    bottom: 26px;
-    transform: translateX(-50%);
+    top: 50%;
+    bottom: auto;
+    transform: translate(-50%, -50%);
     width: min(780px, calc(100vw - 56px));
-    max-height: min(70vh, 680px);
+    /* The window is the limit and the body scrolls inside it. A fixed 70vh cap
+       wasted room on tall screens and clipped the signature area. */
+    max-height: calc(100vh - 48px);
     z-index: 80;
     overflow: hidden;
     border: 1px solid var(--tb-glass-line);
@@ -807,8 +811,8 @@
       <button type="button" class="rtb" data-cmd="formatBlock" data-arg="blockquote" title="引用">❝</button>
       <button type="button" class="rtb" data-cmd="removeFormat" title="清除格式">清</button>
       <span class="rtsep"></span>
-      <label class="rtcolor" title="文字颜色"><input type="color" id="rt-fg" value="#c0392b"></label>
-      <label class="rtcolor" title="文字背景色"><input type="color" id="rt-bg" value="#ffe58f"></label>
+      <button type="button" class="rtb" id="rt-fg-btn" title="文字颜色（色卡）"><span style="border-bottom:2px solid #c0392b;padding:0 2px">A</span></button>
+      <button type="button" class="rtb" id="rt-bg-btn" title="文字背景色（色卡）"><span style="background:#ffe58f;padding:0 2px">A</span></button>
     </div>
     <div class="textarea richbody" id="c-body" contenteditable="true" data-placeholder="正文（支持 HTML，可以直接粘贴排版）"></div>
     <div class="sigbar">
@@ -4073,6 +4077,13 @@ function deleteSig () {
     + '.rtcolor{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 5px;border:1px solid var(--tb-border);border-radius:7px;cursor:pointer}'
     + '.rtcolor:hover{border-color:var(--tb-border-strong);background:var(--tb-hover)}'
     + '.rtcolor input[type=color]{width:20px;height:18px;padding:0;border:0;background:transparent;cursor:pointer}'
+    + '.rtpop{position:fixed;z-index:120;display:grid;grid-template-columns:repeat(4,26px);gap:6px;padding:8px;'
+    + 'border:1px solid var(--tb-glass-line);border-radius:10px;background:var(--tb-glass-1);'
+    + 'backdrop-filter:var(--tb-glass-blur-strong);-webkit-backdrop-filter:var(--tb-glass-blur-strong);'
+    + 'box-shadow:0 18px 44px rgba(0,0,0,.45)}'
+    + '.rtswatch{width:26px;height:22px;border-radius:5px;border:1px solid var(--tb-border-strong);cursor:pointer;padding:0}'
+    + '.rtswatch:hover{transform:scale(1.08)}'
+    + '.rtcustom{grid-column:1 / -1;width:100%;height:22px;padding:0;border:1px solid var(--tb-border-strong);border-radius:5px;background:transparent;cursor:pointer}'
   document.head.appendChild(style)
 
   bar.addEventListener('mousedown', function (event) {
@@ -4115,8 +4126,10 @@ function deleteSig () {
     $('c-body').focus()
     saveSel()
   }
-  $('rt-fg').oninput = function () { colored('foreColor', this.value) }
-  $('rt-bg').oninput = function () { colored('hiliteColor', this.value) }
+  // (The swatch popover above is wired to the two toolbar buttons; the old direct
+  // <input type=color> elements it replaced are gone, and their handlers with
+  // them — a handler on a missing element throws at load and takes the panel with
+  // it.)
 
   function currentBlock () {
     var sel = window.getSelection ? window.getSelection() : null
@@ -4128,6 +4141,71 @@ function deleteSig () {
     }
     return null
   }
+
+  // Preset swatches, with the picker kept as the last resort. Picking a colour
+  // from a wheel while writing is a detour; a small palette is one click.
+  var FG_SWATCHES = ['#111111', '#5f6368', '#c0392b', '#d97706', '#1a7f37', '#1d4ed8', '#7c3aed', '#be185d']
+  var BG_SWATCHES = ['#ffffff', '#f1f3f4', '#ffe58f', '#d7f0d7', '#dbeafe', '#fde2e4', '#ede9fe', '#fce7f3']
+  var pop = document.createElement('div')
+  pop.className = 'rtpop'
+  pop.hidden = true
+  document.body.appendChild(pop)
+
+  function openSwatches (which, anchor) {
+    pop.innerHTML = ''
+    var colors = which === 'fg' ? FG_SWATCHES : BG_SWATCHES
+    var command = which === 'fg' ? 'foreColor' : 'hiliteColor'
+    for (var i = 0; i < colors.length; i++) {
+      (function (color) {
+        var sw = document.createElement('button')
+        sw.type = 'button'
+        sw.className = 'rtswatch'
+        sw.style.background = color
+        sw.title = color
+        sw.onclick = function () { colored(command, color); pop.hidden = true }
+        pop.appendChild(sw)
+      })(colors[i])
+    }
+    var custom = document.createElement('input')
+    custom.type = 'color'
+    custom.className = 'rtcustom'
+    custom.title = '自定义颜色（取色器）'
+    custom.oninput = function () { colored(command, custom.value) }
+    pop.appendChild(custom)
+    var rect = anchor.getBoundingClientRect()
+    pop.style.left = Math.max(8, Math.min(Math.round(rect.left), window.innerWidth - 190)) + 'px'
+    pop.style.top = Math.round(rect.bottom + 6) + 'px'
+    pop.hidden = false
+  }
+  $('rt-fg-btn').onclick = function () { openSwatches('fg', this) }
+  $('rt-bg-btn').onclick = function () { openSwatches('bg', this) }
+  document.addEventListener('click', function (event) {
+    if (pop.hidden) return
+    if (pop.contains(event.target)) return
+    if (event.target.id === 'rt-fg-btn' || event.target.id === 'rt-bg-btn') return
+    pop.hidden = true
+  })
+
+  // Paste hygiene, applied where it matters: on the way in. A block-level wrapper
+  // per blank-line-separated paragraph keeps the shape readable without dragging
+  // in the source's fonts, colours and tables. Shift+V deliberately keeps the
+  // original formatting.
+  $('c-body').addEventListener('paste', function (event) {
+    if (event.shiftKey) return
+    var data = event.clipboardData
+    if (!data) return
+    var text = data.getData('text/plain')
+    if (!text) return
+    event.preventDefault()
+    var html = String(text).split(/\n{2,}/).map(function (block) {
+      return '<div>' + escapeHtml(block).replace(/\n/g, '<br>') + '</div>'
+    }).join('')
+    try {
+      document.execCommand('insertHTML', false, html)
+    } catch (error) {
+      document.execCommand('insertText', false, text)
+    }
+  })
 
   $('rt-size').onchange = function () {
     var block = currentBlock()
