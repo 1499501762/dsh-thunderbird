@@ -1,10 +1,10 @@
-'use strict'
-
 // Diagnostics for the DSH Thunderbird bridge install: which profile is live and
 // whether the add-on was scanned by the AddonManager.
+//
+//   node dev/inspect-addons.js dsh-thunderbird-bridge@dsh.local "%APPDATA%\Thunderbird\Profiles\<profile>"
 
-const fs = require('fs')
-const path = require('path')
+import fs from 'node:fs'
+import path from 'node:path'
 
 const id = process.argv[2]
 const profile = process.argv[3]
