@@ -1250,6 +1250,64 @@ function whiteTile (img, mode) {
   }
   if (opaque === 0) return false
 
+  // The matte-channel fix, which is what a serious exporter does and what a hard
+  // threshold cannot: an anti-aliased edge pixel is white*(1-a) + ink*a. Dropping
+  // the white outright leaves the ink still mixed with white, so the outline keeps
+  // a pale rim and reads as chewed. Give the edge a SOFT alpha instead, then solve
+  // every affected pixel back for the ink it was covering.
+  var T_SOLID = 0.78
+  var T_CLEAR = 0.97
+  var lumaAt = function (i) {
+    return (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255
+  }
+  var alphaAt = function (i) {
+    var l = lumaAt(i)
+    if (l >= T_CLEAR) return 0
+    if (l <= T_SOLID) return 1
+    return (T_CLEAR - l) / (T_CLEAR - T_SOLID)
+  }
+  var unmix = function (i, a) {
+    if (a <= 0.004) { px[i + 3] = 0; return }
+    var backdrop = 255 * (1 - a)
+    for (var c = 0; c < 3; c++) {
+      var v = (px[i + c] - backdrop) / a
+      px[i + c] = v < 0 ? 0 : (v > 255 ? 255 : v)
+    }
+    px[i + 3] = Math.round(255 * a)
+  }
+
+  // Everything the fill reached is background. The one ring of pixels just
+  // outside it is the anti-aliased outline, so it gets the same treatment even
+  // though the fill stopped there.
+  var outline = []
+  for (var qy = 0; qy < h; qy++) {
+    for (var qx = 0; qx < w; qx++) {
+      var qi = qy * w + qx
+      if (seen[qi] === 1) continue
+      if (px[qi * 4 + 3] < 40) continue
+      var touches = false
+      for (var dy = -1; dy <= 1 && !touches; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+          var nx = qx + dx
+          var ny = qy + dy
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+          if (seen[ny * w + nx] === 1) { touches = true; break }
+        }
+      }
+      if (touches) outline.push(qi)
+    }
+  }
+  for (var f = 0; f < w * h; f++) {
+    if (seen[f] !== 1) continue
+    var fi = f * 4
+    unmix(fi, alphaAt(fi))
+  }
+  for (var e2 = 0; e2 < outline.length; e2++) {
+    var ei = outline[e2] * 4
+    var ea = alphaAt(ei)
+    if (ea < 1) unmix(ei, ea)
+  }
+
   var flip
   if (mode === 'keyflip') flip = true
   else if (mode === 'key') flip = false
