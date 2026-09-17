@@ -750,7 +750,90 @@
   html.session-view .chat-msg { font-size: 13px; padding: 10px 12px; }
   html.session-view .chat-msg.user { margin-left: 12%; }
   html.session-view .chat-input { flex: none; padding: 10px 0 0; border-top: 1px solid var(--tb-glass-line); }
+  /* The log is the ONLY scrolling child; the composer under it never moves. */
+  html.session-view .composer { border-top: 0; }
   html.session-view #sview-empty { padding: 18px 2px; }
+
+  /* ---------- the composer ----------
+     Modelled on DSH's own: a strip of state above, a growing text box, the
+     attach control on the left and send on the right. The input is the last row
+     of a column whose only scrolling child is the log above it, which is what
+     keeps it in place while the conversation moves. */
+  .composer {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 9px;
+    border-top: 1px solid var(--tb-glass-line);
+  }
+  .composer-strip { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .cm-chip {
+    font-size: 10.5px;
+    color: var(--tb-text-dim);
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 999px;
+    padding: 2px 9px;
+    max-width: 44%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cm-btn { background: transparent; cursor: pointer; font: inherit; font-size: 10.5px; color: var(--tb-text-dim); }
+  .cm-btn:hover { background: var(--tb-hover); color: var(--tb-text); }
+  .cm-btn.on { color: var(--tb-accent); border-color: color-mix(in srgb, var(--tb-accent) 45%, transparent); }
+  .cm-meter { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--tb-text-dim); }
+  .cm-meter i { display: block; width: 54px; height: 4px; border-radius: 999px; background: var(--tb-border); overflow: hidden; }
+  .cm-meter b { display: block; height: 100%; background: var(--tb-accent); }
+  .cm-instr { display: flex; gap: 6px; }
+  .cm-instr .input { flex: 1; }
+  .cm-files { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cm-file {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 999px;
+    padding: 2px 4px 2px 9px;
+    background: var(--tb-glass-2);
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .cm-file button { border: 0; background: transparent; color: var(--tb-text-dim); cursor: pointer; font: inherit; padding: 0 4px; }
+  .cm-file button:hover { color: var(--tb-err); }
+  .cm-row { display: flex; align-items: flex-end; gap: 6px; }
+  .cm-icon {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    border: 1px solid var(--tb-border);
+    background: transparent;
+    color: var(--tb-text-dim);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .cm-icon:hover { background: var(--tb-hover); color: var(--tb-text); }
+  .cm-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    resize: none;
+    border: 1px solid var(--tb-border);
+    border-radius: var(--tb-r-md);
+    background: color-mix(in srgb, var(--tb-bg) 82%, transparent);
+    color: var(--tb-text);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    padding: 7px 10px;
+    max-height: 160px;
+    overflow: auto;
+    outline: none;
+  }
+  .cm-text:focus { border-color: var(--tb-border-strong); }
+  .cm-send { flex: none; height: 30px; }
 
   /* When the block really did move to the right sidebar, what is left behind in
      the panel must stop being a floating window. It used to keep its fixed
@@ -2847,6 +2930,17 @@ function renderAi () {
     return
   }
   body.innerHTML = renderAiMarkdown(state.ai.text)
+  // A sidebar that opens at the TOP of a long answer makes you scroll before you
+  // can read the point of it. Follow the bottom, but only when the content
+  // actually changed — otherwise scrolling up to re-read gets yanked back on
+  // every re-render.
+  if (AI_VIEW && body.scrollHeight > body.clientHeight) {
+    var signature = String(state.ai.text || '').length + ':' + (state.ai.busy ? '1' : '0')
+    if (body.dataset.lastSignature !== signature) {
+      body.dataset.lastSignature = signature
+      body.scrollTop = body.scrollHeight
+    }
+  }
 }
 
 var AI_TITLES = {
@@ -4263,12 +4357,19 @@ function pollStatus () {
     if (state.online && !was) {
       loadFolders().then(loadMessages).catch(function (error) { setError(error.message) })
     }
+    // A session deleted in DSH is unbound by the client half, which runs whether
+    // or not this panel is open — but the 会话 window would keep showing the dead
+    // binding until something asked again. Poll the list while it is on screen.
+    sessionsPollTick = (sessionsPollTick + 1) % 6
+    if (sessionsPollTick === 0 && !$('sessions').hidden) loadSessions().then(refreshChats)
     renderStatus()
   }).catch(function () {
     state.online = false
     renderStatus()
   })
 }
+
+var sessionsPollTick = 0
 
 function pollEvents () {
   return fetch('/api/thunderbird/events?since=' + state.seq, { cache: 'no-store' }).then(function (res) { return res.json() }).then(function (data) {
@@ -5121,35 +5222,10 @@ function watchTranscript (record) {
   }, 2200)
 }
 
-function sendToSession (record, text) {
-  var chat = chatOf(record.key)
-  var value = String(text || '').trim()
-  if (!value) return
-  chat.error = ''
-  chat.sending = true
-  refreshChats()
-  // The first prompt of a session carries the standing context, so the agent
-  // knows the working directory is this thread and does not need to be told
-  // again on every follow-up.
-  var prompt = chat.messages.length === 0
-    ? '这个会话的工作目录是一封（或一条）邮件：`thread.md` 是邮件正文，`ai-log.md` 是之前的 AI 记录。请按需读取。\n\n' + value
-    : value
-  dshCall('session/prompt', { sessionId: record.sessionId, text: prompt, mode: 'queue' }, 90000)
-    .then(function () {
-      chat.sending = false
-      return loadTranscript(record)
-    })
-    .then(function () {
-      refreshChats()
-      watchTranscript(record)
-    })
-    .catch(function (error) {
-      chat.sending = false
-      chat.error = String((error && error.message) || error)
-      refreshChats()
-    })
-}
-
+// `session/prompt` used to live here. It is gone: the composer sends through
+// DSH's own input machine now (see sendSessionMessage), which is the only path
+// that can carry attachments — and having two send paths meant the panel could
+// behave differently depending on which button was used.
 function stopSession (record) {
   dshCall('session/cancel', { sessionId: record.sessionId }, 20000)
     .then(function () { return loadTranscript(record) })
@@ -5215,26 +5291,7 @@ function chatBlock (record) {
   }
 
   if (record.sessionId) {
-    var form = document.createElement('div')
-    form.className = 'chat-input'
-    var input = document.createElement('input')
-    input.className = 'input'
-    input.placeholder = '就这条邮件线问一句…（回车发送）'
-    input.value = chat.draft || ''
-    input.oninput = function () { chat.draft = input.value }
-    input.onkeydown = function (event) {
-      if (event.key === 'Enter') { event.preventDefault(); sendToSession(record, input.value); chat.draft = '' }
-    }
-    form.appendChild(input)
-    if (chat.running) {
-      form.appendChild(button('停止', function () { stopSession(record) }))
-    } else {
-      form.appendChild(button(chat.sending ? '发送中…' : '发送', function () {
-        sendToSession(record, input.value)
-        chat.draft = ''
-      }))
-    }
-    wrap.appendChild(form)
+    wrap.appendChild(composerEl(record))
     if (!chat.loaded && !chat.loading) {
       chat.loading = true
       loadTranscript(record).then(function (result) {
@@ -5245,6 +5302,247 @@ function chatBlock (record) {
     }
   }
   return wrap
+}
+
+// ---------------------------------------------------------------- 会话输入框
+// Modelled on DSH's own composer, and — for the parts that exist — actually IS
+// it: the text and any attachments are handed to `conversation.input.for(scope)`,
+// the same input machine the native composer drives, so submit() runs a turn
+// exactly as if it had been typed into DSH by hand.
+//
+// What the native composer shows and this does not: its approval/permission chip
+// and its model switcher are client-ui features with no service face a plugin can
+// reach (probed: modelSelection / permissionPresets / tokenMeter are all absent
+// from the plugin's ctx). The model is therefore REPORTED, from the session's own
+// assistant messages, rather than offered as a choice.
+
+var INSTRUCTION_KEY = 'dsh-tb-thread-instructions'
+
+function loadInstructions () {
+  try { return JSON.parse(localStorage.getItem(INSTRUCTION_KEY) || '{}') || {} } catch (error) { return {} }
+}
+function saveInstruction (key, text) {
+  var map = loadInstructions()
+  if (text) map[key] = text
+  else delete map[key]
+  try { localStorage.setItem(INSTRUCTION_KEY, JSON.stringify(map)) } catch (error) { /* no storage */ }
+}
+
+// A deliberate over-estimate of what the thread costs the model. It is a
+// heuristic over characters, NOT the API's token count, and the label says so:
+// an exact number would need the token meter, which is not on the plugin's ctx.
+function estimateTokens (chat) {
+  var chars = 0
+  for (var i = 0; i < chat.messages.length; i++) {
+    var text = chat.messages[i].text || ''
+    chars += text.length
+  }
+  return Math.round(chars / 3)
+}
+
+function fmtTokens (n) {
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k'
+  return String(n)
+}
+
+function sessionModel (chat) {
+  for (var i = chat.messages.length - 1; i >= 0; i--) {
+    if (chat.messages[i].role === 'assistant' && chat.messages[i].model) return chat.messages[i].model
+  }
+  return ''
+}
+
+function composerEl (record) {
+  var chat = chatOf(record.key)
+  if (!chat.files) chat.files = []
+  chat.instruction = loadInstructions()[record.key] || ''
+
+  var box = document.createElement('div')
+  box.className = 'composer'
+
+  // ---- the strip above the box: model, context estimate, instruction
+  var strip = document.createElement('div')
+  strip.className = 'composer-strip'
+
+  var model = sessionModel(chat)
+  var chip = document.createElement('span')
+  chip.className = 'cm-chip'
+  chip.textContent = model || '默认模型'
+  chip.title = model
+    ? '这条会话正在用的模型（来自它自己的回复记录）。切换模型是 DSH 客户端的功能，没有开放给插件。'
+    : '还没有回复记录，用 DSH 的默认模型'
+  strip.appendChild(chip)
+
+  var used = estimateTokens(chat)
+  var meter = document.createElement('span')
+  meter.className = 'cm-meter'
+  meter.title = '按字符估算的上下文占用，不是接口返回的精确用量'
+  var bar = document.createElement('i')
+  var fill = document.createElement('b')
+  // 128k is the common window for the configured routes; the bar is a shape, the
+  // number beside it is the part that is real.
+  fill.style.width = Math.min(100, Math.round(used / 128000 * 100)) + '%'
+  bar.appendChild(fill)
+  meter.appendChild(bar)
+  var usedLabel = document.createElement('span')
+  usedLabel.textContent = '≈' + fmtTokens(used)
+  meter.appendChild(usedLabel)
+  strip.appendChild(meter)
+
+  var instrBtn = document.createElement('button')
+  instrBtn.type = 'button'
+  instrBtn.className = 'cm-chip cm-btn' + (chat.instruction ? ' on' : '')
+  instrBtn.textContent = chat.instruction ? '指令 · 已设' : '指令'
+  instrBtn.title = '这条邮件线的常驻指令，会加在每次提问前面'
+  strip.appendChild(instrBtn)
+  box.appendChild(strip)
+
+  // ---- the instruction editor
+  var instrRow = document.createElement('div')
+  instrRow.className = 'cm-instr'
+  instrRow.hidden = true
+  var instrInput = document.createElement('input')
+  instrInput.className = 'input'
+  instrInput.placeholder = '常驻指令（例如：用中文回答，只给结论）'
+  instrInput.value = chat.instruction
+  var instrSave = document.createElement('button')
+  instrSave.type = 'button'
+  instrSave.className = 'btn'
+  instrSave.textContent = '保存'
+  instrSave.onclick = function () {
+    chat.instruction = instrInput.value.trim()
+    saveInstruction(record.key, chat.instruction)
+    instrRow.hidden = true
+    refreshChats()
+  }
+  instrRow.appendChild(instrInput)
+  instrRow.appendChild(instrSave)
+  box.appendChild(instrRow)
+  instrBtn.onclick = function () { instrRow.hidden = !instrRow.hidden; if (!instrRow.hidden) instrInput.focus() }
+
+  // ---- attachments
+  var attachRow = document.createElement('div')
+  attachRow.className = 'cm-files'
+  attachRow.hidden = true
+  box.appendChild(attachRow)
+
+  function renderFiles () {
+    attachRow.innerHTML = ''
+    attachRow.hidden = chat.files.length === 0
+    chat.files.forEach(function (file, index) {
+      var tag = document.createElement('span')
+      tag.className = 'cm-file'
+      tag.appendChild(document.createTextNode(file.name + ' · ' + fmtSize(file.size)))
+      var x = document.createElement('button')
+      x.type = 'button'
+      x.textContent = '×'
+      x.title = '移除'
+      x.onclick = function () { chat.files.splice(index, 1); renderFiles() }
+      tag.appendChild(x)
+      attachRow.appendChild(tag)
+    })
+  }
+
+  var picker = document.createElement('input')
+  picker.type = 'file'
+  picker.multiple = true
+  picker.hidden = true
+  picker.onchange = function () {
+    var picked = picker.files ? [].slice.call(picker.files) : []
+    picker.value = ''
+    for (var i = 0; i < picked.length; i++) chat.files.push(picked[i])
+    renderFiles()
+  }
+  box.appendChild(picker)
+
+  // ---- the text row
+  var row = document.createElement('div')
+  row.className = 'cm-row'
+
+  var attach = document.createElement('button')
+  attach.type = 'button'
+  attach.className = 'cm-icon'
+  attach.textContent = '＋'
+  attach.title = '添加附件（走 DSH 自己的输入框，上传和发送都由它处理）'
+  attach.onclick = function () { picker.click() }
+  row.appendChild(attach)
+
+  var input = document.createElement('textarea')
+  input.className = 'cm-text'
+  input.rows = 1
+  input.placeholder = '就这条邮件线问一句…（回车发送，Shift+回车换行）'
+  input.value = chat.draft || ''
+  function autoGrow () {
+    input.style.height = 'auto'
+    input.style.height = Math.min(160, input.scrollHeight) + 'px'
+  }
+  input.oninput = function () { chat.draft = input.value; autoGrow() }
+  input.onkeydown = function (event) {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit() }
+  }
+  row.appendChild(input)
+
+  var send = document.createElement('button')
+  send.type = 'button'
+  send.className = 'btn primary cm-send'
+  send.textContent = chat.running ? '停止' : (chat.sending ? '发送中…' : '发送')
+  send.disabled = chat.sending === true
+  send.onclick = function () {
+    if (chat.running) { stopSession(record); return }
+    submit()
+  }
+  row.appendChild(send)
+  box.appendChild(row)
+
+  function submit () {
+    var text = input.value.trim()
+    if (!text && !chat.files.length) return
+    sendSessionMessage(record, text, chat.files)
+    chat.draft = ''
+    input.value = ''
+    autoGrow()
+  }
+
+  setTimeout(autoGrow, 0)
+  renderFiles()
+  return box
+}
+
+// One send path. The text goes through `setDraft` and the turn through
+// `submit()` — DSH's own composer — so attachments upload, the model and the
+// approval settings apply, and the message lands in the session exactly as a
+// hand-typed one would.
+function sendSessionMessage (record, text, files) {
+  var chat = chatOf(record.key)
+  if (!record.sessionId) { setError('这条邮件线还没有 DSH 会话'); return }
+  chat.error = ''
+  chat.sending = true
+  refreshChats()
+
+  // The first message of a session carries the standing context, so the agent
+  // knows the working directory is this thread without being told every time.
+  var standing = chat.messages.length === 0
+    ? '这个会话的工作目录是一封（或一条）邮件：`thread.md` 是邮件正文，`ai-log.md` 是之前的 AI 记录。请按需读取。'
+    : ''
+  var instruction = chat.instruction ? '（常驻要求：' + chat.instruction + '）\n' : ''
+  var body = (standing ? standing + '\n\n' : '') + instruction + (text || '')
+
+  dshCall('session/compose', {
+    sessionId: record.sessionId,
+    text: body,
+    files: files && files.length ? files : undefined,
+  }, 120000).then(function () {
+    chat.sending = false
+    chat.files = []
+    return loadTranscript(record)
+  }).then(function () {
+    refreshChats()
+    watchTranscript(record)
+  }).catch(function (error) {
+    chat.sending = false
+    chat.error = String((error && error.message) || error)
+    refreshChats()
+  })
 }
 
 function sessionRow (record) {

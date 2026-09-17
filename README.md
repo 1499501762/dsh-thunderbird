@@ -192,6 +192,48 @@ host 半区还把这套能力注册成了 DSH 的**模型工具**，所以**任�
 | `dsh-thunderbird:ai` | `?view=ai` | 最近一次 AI 动作的完整结果（正文栏只留一行提示条） |
 | `dsh-thunderbird:session` | `?view=session&key=…&session=…` | **一条邮件线的 DSH 会话** |
 
+### 在 DSH 里删掉会话 → 邮件线自动解绑
+
+删除会话以前只发生在 DSH 那一侧，邮件线还指着那个已经不存在的会话，面板照旧列着它，
+往里提问每个都失败。现在 **client 半区订阅 DSH 自己的会话列表**，把消失的 id POST 给
+`/api/thunderbird/session/detach`，宿主清掉 `sessionId` / `workspaceId`。
+
+两件刻意的选择：
+
+- **保留导出目录和 `ai-log.md`**。用户删的是**对话**，不是邮件；把文件一起删掉会销毁
+  他们没要求销毁的历史。解绑只断开指向，随时可以重新挂载。
+- 这条链**不经过面板**，所以面板关着也生效。回调本来想给面板发个事件，但面板比
+  client 半区**深一层 frame**，往 `window` 发消息只会落到壳上；改成面板在「会话」窗口
+  开着时顺带刷新列表。
+
+### 会话输入框：直接驱动 DSH 自己的那个
+
+`?view=session` 底部的输入框不是仿制品，**对于存在的部分它就是 DSH 的输入机器**：
+
+```
+handle = ctx.conversation.input.for(ctx.sessions.scope(sessionId))
+handle.actions.setDraft(text)
+handle.actions.submit()          // 等价于点原生输入框的发送
+```
+
+附件走原生那套（照抄 `dsh-client-ui-conversation` 第 16792 行起的 `addFiles`）：
+
+```
+drafts = conversation.createDrafts(sessionId, files)   // 注册文件并开始上传
+handle.actions.addAttachments(drafts.map(d => d.id))   // 失败则 releaseDraftAttachments
+```
+
+**`addAttachments` 收的是附件 id，不是 File** —— 传 File 抛 `ids is not iterable`，
+传 FileList 或 `[File]` 不报错但什么都不加。这是实测出来的，不是猜的。
+
+输入框还带了它自己那部分状态：**模型**（从这条会话自己的回复记录里读，只读）、
+**上下文占用估算**、**这条线的常驻指令**。
+
+**做不到的两项，说清楚**：原生输入框的**模型切换**和**权限模式**是 client-ui 的功能，
+没有对插件开放的服务面（实测 `modelSelection` / `permissionPresets` / `tokenMeter`
+在插件的 ctx 上一个都不存在），所以模型是**显示**而不是可选；上下文是**按字符估算**、
+不是接口返回的精确用量，标签上也这么写。
+
 ### 已保存的会话要"打开一次"才在内存里 —— 现在不用了
 
 DSH 只在一个会话被**打开或追问**时才把它装配进内存，所以宿主那个 `sessions.get(id)`
@@ -577,6 +619,14 @@ Thunderbird：没有有效 stdout 时 Thunderbird 会直接起不来（踩过，
   能抓住"少一个括号"和"`//` 注释吞掉下一个函数声明"这类不会被浏览器报出来的错。
 - 面板页面**会被浏览器缓存**：改完 `ui.html` 后 `ego_navigate`/普通刷新可能仍拿旧版，
   验收时带一个 `?cb=<时间戳>` 强制取新。
+- **`session/detach` 是宿主改动，要重启 DSH 才生效**（和 `dsh-side/thunderbird-host.mjs`
+  里其它改动一样）。在那之前，删除会话只会让面板列着一个死绑定。
+- **会话输入框的 `submit()` 没有被实际执行验证过**：验证它需要真的发出一个 turn，
+  而那是一次对外部服务的提交，自动审批策略正确地拒绝了。它的输入端
+  （`setDraft` → `draftRev` 递增）和附件端（`createDrafts` → `addAttachments` →
+  `attachmentIds` 出现，再 `removeAttachment` 清干净）都实测过，
+  `submit` 的实现是 `dsh-client-ui-conversation` 里
+  `submit: () => this.submit('queue')`（原生发送按钮绑的就是它），但没有真跑过一次。
 
 ## 打包 Thunderbird 插件（.xpi）
 

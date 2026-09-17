@@ -675,6 +675,38 @@ export function apply(ctx, config) {
     sendJson(res, 200, { ok: true, removed: true, filesRemoved })
   }
 
+  // A session deleted in DSH must not leave the mail line pointing at it.
+  //
+  // The client half watches DSH's session list and reports the ids that are gone;
+  // this clears the binding but KEEPS the exported directory and the panel's own
+  // ai-log, so the thread still has its record of what was said and can be
+  // re-attached later. Deleting the files here would destroy history the user did
+  // not ask to destroy — they deleted a CONVERSATION, not the mail.
+  const sessionDetachHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    const gone = Array.isArray(input && input.sessionIds) ? input.sessionIds.map(String) : []
+    if (!gone.length) { sendJson(res, 200, { ok: true, detached: [] }); return }
+    await loadStore()
+    const lookup = {}
+    for (let i = 0; i < gone.length; i++) lookup[gone[i]] = true
+    const detached = []
+    for (const key of Object.keys(store.sessions || {})) {
+      const record = store.sessions[key]
+      if (!record || !record.sessionId) continue
+      if (!lookup[String(record.sessionId)]) continue
+      record.sessionId = ''
+      if (record.workspaceId) record.workspaceId = ''
+      record.detachedAt = Date.now()
+      record.detachedReason = 'session-removed'
+      record.updatedAt = record.detachedAt
+      detached.push({ key: key, subject: record.subject || '' })
+    }
+    if (detached.length) await saveStore()
+    sendJson(res, 200, { ok: true, detached: detached })
+  }
+
   // A bound thread's conversation lives in a real DSH session, and the host
   // session store can read it back: Session.snapshotEvents() returns the log, so
   // the panel shows the same turns DSH shows instead of keeping its own copy.
@@ -1109,6 +1141,7 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/attach', sessionAttachHandler],
     ['/api/thunderbird/session/log', sessionLogHandler],
     ['/api/thunderbird/session/remove', sessionRemoveHandler],
+    ['/api/thunderbird/session/detach', sessionDetachHandler],
     ['/api/thunderbird/session/file', sessionFileHandler],
     ['/api/thunderbird/session/transcript', transcriptHandler],
     ['/api/thunderbird/image', imageProxyHandler],

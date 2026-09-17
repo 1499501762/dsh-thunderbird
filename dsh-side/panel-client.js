@@ -693,6 +693,69 @@ window.__ModuleLoader__.load({
         // sessionOf is undefined. `sessions.open` is the only thing that works, so
         // that is what the panel uses, and it is honest about the side effect
         // (it makes that session current).
+        if (msg.type === 'probe/composer') {
+          // What does DSH's own composer expose to a plugin? Writing a lookalike
+          // from scratch would miss attachments, model and the token meter, so
+          // the point is to reach the REAL one.
+          var conv = serviceOf(ctx, 'conversation')
+          var out = { present: conv !== undefined }
+          var show = function (name, limit) {
+            try {
+              var fn = conv[name]
+              if (typeof fn !== 'function') return { name: name, type: typeof fn }
+              return { name: name, arity: fn.length, src: String(fn).slice(0, limit || 260) }
+            } catch (error) { return { name: name, error: String(error && error.message) } }
+          }
+          if (conv) {
+            out.own = Object.keys(conv)
+            out.methods = ['send', 'sendSession', 'createDrafts', 'beginFileUpload', 'resolveDraftAttachments'].map(function (n) { return show(n) })
+            out.inputKeys = conv.input ? Object.keys(conv.input) : null
+          }
+          var sessions = serviceOf(ctx, 'sessions')
+          if (sessions && msg.sessionId) {
+            try {
+              var scoped = sessions.scope(String(msg.sessionId))
+              out.scopeKeys = scoped ? Object.keys(scoped).slice(0, 40) : null
+              if (scoped && conv && conv.input && typeof conv.input.for === 'function') {
+                var handle = conv.input.for(scoped)
+                out.inputFor = handle ? Object.keys(handle) : null
+                if (handle && handle.state && typeof handle.state.getSnapshot === 'function') {
+                  out.draft = handle.state.getSnapshot()
+                }
+                var describe2 = function (bag, label) {
+                  if (!bag) return null
+                  var result = { label: label, keys: Object.keys(bag).slice(0, 30) }
+                  result.fns = {}
+                  Object.keys(bag).slice(0, 30).forEach(function (k) {
+                    if (typeof bag[k] === 'function') result.fns[k] = bag[k].length
+                    else if (bag[k] && typeof bag[k] === 'object') result.fns[k] = 'obj:' + Object.keys(bag[k]).slice(0, 8).join(',')
+                  })
+                  return result
+                }
+                out.actions = describe2(handle && handle.actions, 'actions')
+                out.core = describe2(handle && handle.core, 'core')
+              }
+            } catch (error) { out.scopeError = String((error && error.message) || error) }
+          }
+          var candidates = ['modelSelection', 'model', 'tokenMeter', 'permissionPresets', 'permissions',
+            'approval', 'goal', 'commands', 'command', 'inputTrigger', 'sessionTitle', 'usage', 'meter']
+          out.candidates = candidates.map(function (name) {
+            var svc = serviceOf(ctx, name)
+            if (svc === undefined) return { name: name, present: false }
+            var own = []
+            try { own = Object.keys(svc).slice(0, 24) } catch (error) { own = ['<unreadable>'] }
+            var proto = []
+            try {
+              var p = Object.getPrototypeOf(svc)
+              if (p && p !== Object.prototype) proto = Object.getOwnPropertyNames(p).slice(1, 25)
+            } catch (error) { /* ignore */ }
+            return { name: name, present: true, own: own, proto: proto }
+          })
+          replyTo(event.source, msg.id, { ok: true, result: out })
+          return
+        }
+
+
         if (msg.type === 'panel/open-ai' || msg.type === 'panel/open-tab') {
           var facts = []
           var sidebar = serviceOf(activeCtx, 'betterSidebar')
@@ -917,6 +980,55 @@ window.__ModuleLoader__.load({
         .catch(fail)
     }
 
+    // Watch DSH's own session list and tell the host about ids that disappear.
+    //
+    // Deleting a conversation in DSH left the mail line still pointing at it, so
+    // the panel showed a session that no longer existed and every prompt into it
+    // failed. The list feed is the only place that removal is observable, and the
+    // host is the only side that owns the binding.
+    var sessionIds = null
+    var sessionListUnsub = null
+
+    function watchSessionRemovals (ctx) {
+      var sessions = serviceOf(ctx, 'sessions')
+      if (sessions === undefined || !sessions.list || typeof sessions.list.subscribe !== 'function') return
+      var read = function () {
+        try {
+          var snap = sessions.list.getSnapshot()
+          var rows = Array.isArray(snap) ? snap : ((snap && (snap.sessions || snap.items)) || [])
+          var ids = []
+          for (var i = 0; i < rows.length; i++) {
+            var id = rows[i] && (rows[i].id || rows[i].sessionId)
+            if (id) ids.push(String(id))
+          }
+          return ids
+        } catch (error) { return null }
+      }
+      sessionIds = read()
+      sessionListUnsub = sessions.list.subscribe(function () {
+        var next = read()
+        if (next === null || sessionIds === null) { sessionIds = next; return }
+        var still = {}
+        for (var i = 0; i < next.length; i++) still[next[i]] = true
+        var gone = sessionIds.filter(function (id) { return !still[id] })
+        sessionIds = next
+        if (!gone.length) return
+        // The host is a plain HTTP server, so this needs no channel and works even
+        // with every panel closed.
+        try {
+          fetch(location.origin + '/api/thunderbird/session/detach', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: gone }),
+          }).catch(function () { /* the binding stays; a later list change retries */ })
+        } catch (error) { /* ignore */ }
+        // No cross-frame event here on purpose: the panel is one frame deeper
+        // than this window, so a post to `window` would land on the shell rather
+        // than on the panel. The panel refreshes the list while its 会话 window is
+        // open instead, which needs no plumbing.
+      })
+    }
+
     function apply (ctx) {
       activeCtx = ctx
       try { injectCss() } catch (error) { /* styles are optional */ }
@@ -926,6 +1038,7 @@ window.__ModuleLoader__.load({
       var onMessage = onWindowMessage(ctx)
       window.addEventListener('message', onMessage)
       tryMount()
+      try { watchSessionRemovals(ctx) } catch (error) { /* the rest of the panel still works */ }
       observer = new MutationObserver(function () { try { tryMount() } catch (error) { /* never break the shell */ } })
       observer.observe(document.documentElement, { childList: true, subtree: true })
       if (ctx && typeof ctx.effect === 'function') {
@@ -933,6 +1046,8 @@ window.__ModuleLoader__.load({
           return function () {
             try { if (observer !== null) observer.disconnect() } catch (error) { /* ignore */ }
             if (probeTimer !== null) { clearInterval(probeTimer); probeTimer = null }
+            try { if (typeof sessionListUnsub === 'function') sessionListUnsub() } catch (error) { /* ignore */ }
+            sessionListUnsub = null
             window.removeEventListener('message', onMessage)
             document.removeEventListener('dsh-panel-activate', onPanelActivate)
             document.removeEventListener('click', onDocumentClick, true)
