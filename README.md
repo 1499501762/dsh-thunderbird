@@ -75,8 +75,10 @@ DSH 里一个真实的工作区 + 会话，于是对话、上下文和产出都�
 关键点：**会话的工作目录就是那个邮件目录**。所以 DSH 自己的 agent 一进去就能用常规
 文件工具读到这封邮件，不需要任何特权接口；面板里的每一次 AI 动作也会追加进 `ai-log.md`。
 
-记录是持久的（`~/.dsh/dsh-thunderbird/mail-sessions.json`，`DSH_HOME` 优先），
-面板重启、DSH 重启都不丢；「解除」只删绑定，目录和会话都留着。
+记录是持久的（`${DSH_HOME:-~/.dsh}/dsh-thunderbird/mail-sessions.json`；DSH Desktop 把
+`DSH_HOME` 设为 `%APPDATA%\dsh-desktop\harness`，所以实际落在
+`%APPDATA%\dsh-desktop\harness\dsh-thunderbird\mail\`），面板重启、DSH 重启都不丢；
+「解除」只删绑定，目录和会话都留着。
 
 面板里能做的：打开会话 / 右侧打开 / 重同步（把新邮件重新导出）/ 看 `thread.md` /
 看 `ai-log.md` / 解除。

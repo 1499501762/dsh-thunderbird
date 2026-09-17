@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
 
 export const name = 'dsh-thunderbird'
 
@@ -428,8 +428,6 @@ export function apply(ctx, config) {
     .digest('hex')
     .slice(0, 12)
 
-  const b64url = (value) => Buffer.from(String(value), 'utf8').toString('base64url')
-
   // The bridge answers {ok, result} | {ok:false, error}; tools want an exception.
   async function bridge (method, params, timeoutMs) {
     const out = await rpc(method, params, timeoutMs || 60000)
@@ -713,17 +711,6 @@ export function apply(ctx, config) {
     }
     for (const account of accounts || []) walk(account.rootFolder)
     return flat
-  }
-
-  const findFolder = async (wanted) => {
-    const flat = await folderOptions()
-    if (!wanted) return flat.find((f) => /^\/?inbox$/i.test(f.path || '')) || flat[0]
-    const needle = String(wanted).toLowerCase()
-    return flat.find((f) => f.id === wanted) ||
-      flat.find((f) => (f.path || '').toLowerCase() === needle) ||
-      flat.find((f) => (f.name || '').toLowerCase() === needle) ||
-      flat.find((f) => (f.name || '').toLowerCase().includes(needle)) ||
-      null
   }
 
   const formatHeader = (header) => [
