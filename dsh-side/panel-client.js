@@ -344,6 +344,11 @@ window.__ModuleLoader__.load({
         viewEl.style.top = Math.round(rect.top) + 'px'
         viewEl.style.width = Math.round(rect.width) + 'px'
         viewEl.style.height = Math.round(rect.height) + 'px'
+        // AFTER the box is set, never before: the clearance depends on where this
+        // bar's right edge actually is, and a view with no geometry yet reports the
+        // full window width. Measuring first reserved 205px of dead space in a shell
+        // with no caption buttons at all.
+        syncBarInset()
       }
       if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
       else run()
@@ -353,7 +358,6 @@ window.__ModuleLoader__.load({
     // one handler keeps the overlay and the bar's clearance in step.
     function onViewportChange () {
       trackOverlay()
-      syncBarInset()
     }
 
     function syncShield () {
@@ -390,35 +394,82 @@ window.__ModuleLoader__.load({
     // Window Controls Overlay probe reports the WHOLE titlebar in an embedded frame,
     // and that branch had no cap on it — which collapsed the bar instead of padding
     // it. A wrong-but-plausible number is worse than a conservative one, so every
-    // path here is clamped and the calc() token is not parsed at all.
-    var CAPTION_CAP = 220
+    var CAPTION_CAP = 240
+    var lastLoggedInset = -1
+    // Reserve only as much of the title-row controls as actually OVERLAPS this bar.
+    //
+    // Measuring the distance from the window's right edge is wrong in general: the
+    // bar does not always span the window (in the centre column it is ~400px wide,
+    // nowhere near the caption buttons), and that mistake reserved 205px of dead
+    // space in a shell with no caption buttons at all — the dead-strip regression
+    // again, from the opposite direction.
+    //
+    // The candidates are the LEFT edges of everything that has to stay clickable,
+    // and the answer is how far this bar's right edge reaches past the leftmost of
+    // them. Collecting all of them instead of returning on the first match is what
+    // catches DSH Desktop's injected control, which sits further left than the three
+    // native buttons and is the one that was landing under the refresh icon.
     function captionInset () {
+      if (barEl === null) return 0
+      var win = window.innerWidth
+      var lefts = []
       var root = getComputedStyle(document.documentElement)
       var body = document.body ? getComputedStyle(document.body) : root
       var declared = parseFloat(String(
         root.getPropertyValue('--dsh-desktop-windows-caption-width') ||
         body.getPropertyValue('--dsh-desktop-windows-caption-width') || ''))
-      // +44 is the shell's own slack for the extra control it injects beside them.
-      if (isFinite(declared) && declared >= 40) return Math.min(declared + 44, CAPTION_CAP)
-      // Otherwise measure the real controls at this document's top-right.
-      var minLeft = window.innerWidth
-      var nodes = document.querySelectorAll('button, [role="button"]')
+      // +44 is the shell's own slack for the control it injects beside them.
+      if (isFinite(declared) && declared >= 40) lefts.push(win - (declared + 44))
+
+      // Anything painted OVER this bar in the title row. The centre column is
+      // EXCLUDED: this bar is an opaque overlay covering it, so DSH's own controls
+      // inside the column are already hidden and reserving room for them just left
+      // dead space (they were the whole 193px). What matters is what sits outside
+      // the column and on top — the native window buttons and the control DSH
+      // Desktop injects beside them.
+      var column = centerColumn()
+      var nodes = document.querySelectorAll(
+        'button, [role="button"], [class*="caption" i], [class*="windowControl"], [class*="window-control"]')
       for (var i = 0; i < nodes.length; i++) {
         var node = nodes[i]
         if (node.closest && node.closest(VIEW_SELECTOR) !== null) continue
+        if (column !== null && column.contains(node)) continue
         var rect = node.getBoundingClientRect()
         if (rect.width < 12 || rect.height === 0 || rect.height > 64) continue
-        if (rect.top > 12) continue
-        if (rect.right < window.innerWidth - 6) continue
-        if (rect.left < minLeft) minLeft = rect.left
+        // In the strip AND actually on screen: `top <= 16` alone caught a button
+        // scrolled far above the viewport (top: -1136).
+        if (rect.top > 16 || rect.bottom < 0) continue
+        // A CONTROL, not furniture: the left edge in the right half and a small box
+        // keep a full-width title-bar wrapper out. Without both, a full-width element
+        // gives left ~0 and the answer pegs to the cap.
+        if (rect.width > 220) continue
+        if (rect.left < win * 0.5) continue
+        lefts.push(rect.left)
       }
-      var measured = window.innerWidth - minLeft
-      if (isFinite(measured) && measured >= 12) return Math.min(measured + 12, CAPTION_CAP)
-      // The desktop shell draws them natively, so there may be nothing to measure.
-      var shell = document.querySelector('#dsh-desktop-windows-drag-region') !== null ||
-        document.querySelector('[data-dsh-windows-drag-region]') !== null
-      if (shell && /Windows/i.test(String(navigator.userAgent || ''))) return 138
-      return 0
+      // Nothing measurable: the shell draws them natively (Windows, ~138px) plus the
+      // control it injects (44), so 182 — 138 alone was short by exactly the button
+      // that overlapped.
+      if (!lefts.length) {
+        var shell = document.querySelector('#dsh-desktop-windows-drag-region') !== null ||
+          document.querySelector('[data-dsh-windows-drag-region]') !== null
+        if (shell && /Windows/i.test(String(navigator.userAgent || ''))) lefts.push(win - 182)
+      }
+      if (!lefts.length) return 0
+
+      var minLeft = lefts[0]
+      for (var k = 1; k < lefts.length; k++) if (lefts[k] < minLeft) minLeft = lefts[k]
+      var barRight = barEl.getBoundingClientRect().right
+      var overlap = barRight - minLeft
+      var inset = overlap > 0 ? Math.min(overlap + 12, CAPTION_CAP) : 0
+      // One line, only when it changes: this half cannot see the native caption
+      // buttons, so the log is the only way to learn the real number in that shell.
+      if (inset !== lastLoggedInset) {
+        lastLoggedInset = inset
+        console.log('[dsh-thunderbird] top-right clearance ' + inset + 'px'
+          + ' (barRight=' + Math.round(barRight) + ', leftmost=' + Math.round(minLeft)
+          + ', caption=' + declared + ', win=' + win + ')')
+      }
+      return inset
     }
 
     function syncBarInset () {
@@ -452,10 +503,9 @@ window.__ModuleLoader__.load({
         stateWrap,
         refresh,
       ])
-      // Keep the bar's right edge clear of the window buttons; this row IS the
-      // title row. Re-applied on resize, since the caption cluster can change.
+      // The clearance is applied by trackOverlay once the overlay has its box; a
+      // call here would measure a view with no geometry and reserve the window.
       barEl = bar
-      syncBarInset()
 
       // `shielded=1` tells the panel it may use the full height: the no-drag
       // shield below carves this strip out of the window drag region.
@@ -1258,3 +1308,4 @@ window.__ModuleLoader__.load({
     return module.exports
   },
 })
+
