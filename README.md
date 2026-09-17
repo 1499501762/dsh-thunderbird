@@ -611,16 +611,20 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
 - **DSH 暗色主题的 `brand-primary` 是近白色**（`#f9fafb`），直接当强调色会让「实心主按钮」
   变成白底白字。现在按亮度推出 `--tb-accent-fg`，hover/active 也直接用 DSH 自己的
   `--dsw-alias-interactive-bg-hover/active`。
-- **右上角避让：已整体移除**（连同 `captionClusterWidth` / `calcPx` / `safeRightInset` /
-  `captionInset` 四个函数）。历史：`--dsh-titlebar-safe-inset-right` 在桌面版里不是像素值，
-  而是 `calc(var(--dsh-desktop-windows-caption-width, 140px) + 44px)`，自定义属性的计算值是
-  **未求值的 token 流**，`parseFloat()` 得到 NaN，于是按"纯 px → 自解 calc → Window Controls
-  Overlay API → caption-width+44 → DOM 控件簇 → Windows 兜底 184px"的顺序兜。
-  **为什么删掉**：它在真实 GUI 里量出 **1300px**（WCO 的 `getTitlebarAreaRect()` 在嵌入 frame
-  里返回的是整个标题栏，不是按钮簇），而每条曾经预留它的行 —— `.bar` 和它的溢出弹窗 —— 都在
-  **标题行下面**（`.bar` 自己的 `padding-top` 就把内容推下去了），标题行右边的窗口按钮根本不在
-  它们旁边。结果是右侧一条 1312px 的死白，把整条工具栏从右边挤进来 —— 就是你看到的那张
-  "布局异常"。留一个量错到 1300px 的变量比不留更糟：下一个用它的地方会直接塌掉。
+- **右上角避让：分两处，结论相反，别混为一谈。**
+  - **client 半区自己的 `.dshTb-bar`（"● Thunderbird … 已连接 / ⟳"那一行）必须避让。**
+    它**就在标题行上**，所以窗口按钮真的在它旁边 —— 不避让就是状态文字和刷新按钮
+    压在最小化/关闭下面。这条我删过一次，理由是"所有用它的行都在标题行下面"，
+    **对面板工具栏成立、对这条栏不成立**，于是回归了。
+  - **面板里的 `.bar`（搜索/按钮那一行）和它的溢出弹窗不避让。** 它们的 `padding-top`
+    已经把内容推到标题行下面，窗口按钮永远不在旁边，预留就是右侧一条死白。
+  - **算出来必须夹紧。** 老版本在真实 GUI 里量出 **1300px** —— WCO 的
+    `getTitlebarAreaRect()` 在嵌入 frame 里返回的是**整个标题栏**而不是按钮簇，而那条分支
+    **没有上限** —— 结果不是"多留白"而是**把栏挤塌**。现在只认
+    `--dsh-desktop-windows-caption-width` 这个**纯 px** token（`+44` 是壳给额外按钮留的），
+    再退到 DOM 扫描，最后 Windows 兜底 138，**每条路径都夹到 ≤220px**，并且**完全不解析那个
+    `calc()` token**（它正是 NaN 的来源）。实测：无 token → 12px；140px → **196px**；
+    故意塞 1300px → **232px（夹住了）**，不再是塌掉。
   ⚠️ 仍然成立：**千万不要用"临时插一个 div 量宽度"的办法求值** —— client 半区正观察着同一棵树，
   插节点会再次触发它的挂载回调，于是又去测量 —— 自我维持的 mutation 死循环，把窗口卡死。
 - **图片处理可以逐张改**：自动规则只在「内容确实很暗（深色像素 > 50%）**且**已经不贴边

@@ -86,6 +86,7 @@ window.__ModuleLoader__.load({
 
     var entryEl = null
     var viewEl = null
+    var barEl = null
     var frameEl = null
     var stateEl = null
     var shieldEl = null
@@ -348,6 +349,13 @@ window.__ModuleLoader__.load({
       else run()
     }
 
+    // The caption cluster and the column box both move when the window resizes, so
+    // one handler keeps the overlay and the bar's clearance in step.
+    function onViewportChange () {
+      trackOverlay()
+      syncBarInset()
+    }
+
     function syncShield () {
       if (!open) {
         if (shieldEl !== null) shieldEl.remove()
@@ -368,6 +376,56 @@ window.__ModuleLoader__.load({
       shieldEl.style.top = '0px'
       shieldEl.style.height = stripHeight() + 'px'
       trackOverlay()
+    }
+
+    // How much of the title row the window's caption buttons own.
+    //
+    // The client half's OWN bar sits on that row — it is the row carrying the brand
+    // and the connection state — so it has to reserve this, or the status text and
+    // the refresh control end up underneath the window buttons. This was deleted
+    // once on the reasoning that "every row that used it is below the title row";
+    // true for the panel's toolbar, FALSE for this bar, which is exactly on it.
+    //
+    // Bounded on purpose. The earlier version measured 1300px in the live GUI — the
+    // Window Controls Overlay probe reports the WHOLE titlebar in an embedded frame,
+    // and that branch had no cap on it — which collapsed the bar instead of padding
+    // it. A wrong-but-plausible number is worse than a conservative one, so every
+    // path here is clamped and the calc() token is not parsed at all.
+    var CAPTION_CAP = 220
+    function captionInset () {
+      var root = getComputedStyle(document.documentElement)
+      var body = document.body ? getComputedStyle(document.body) : root
+      var declared = parseFloat(String(
+        root.getPropertyValue('--dsh-desktop-windows-caption-width') ||
+        body.getPropertyValue('--dsh-desktop-windows-caption-width') || ''))
+      // +44 is the shell's own slack for the extra control it injects beside them.
+      if (isFinite(declared) && declared >= 40) return Math.min(declared + 44, CAPTION_CAP)
+      // Otherwise measure the real controls at this document's top-right.
+      var minLeft = window.innerWidth
+      var nodes = document.querySelectorAll('button, [role="button"]')
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i]
+        if (node.closest && node.closest(VIEW_SELECTOR) !== null) continue
+        var rect = node.getBoundingClientRect()
+        if (rect.width < 12 || rect.height === 0 || rect.height > 64) continue
+        if (rect.top > 12) continue
+        if (rect.right < window.innerWidth - 6) continue
+        if (rect.left < minLeft) minLeft = rect.left
+      }
+      var measured = window.innerWidth - minLeft
+      if (isFinite(measured) && measured >= 12) return Math.min(measured + 12, CAPTION_CAP)
+      // The desktop shell draws them natively, so there may be nothing to measure.
+      var shell = document.querySelector('#dsh-desktop-windows-drag-region') !== null ||
+        document.querySelector('[data-dsh-windows-drag-region]') !== null
+      if (shell && /Windows/i.test(String(navigator.userAgent || ''))) return 138
+      return 0
+    }
+
+    function syncBarInset () {
+      if (barEl === null) return
+      var inset = 0
+      try { inset = captionInset() } catch (error) { inset = 0 }
+      barEl.style.paddingRight = (12 + inset) + 'px'
     }
 
     function ensureView () {
@@ -394,6 +452,10 @@ window.__ModuleLoader__.load({
         stateWrap,
         refresh,
       ])
+      // Keep the bar's right edge clear of the window buttons; this row IS the
+      // title row. Re-applied on resize, since the caption cluster can change.
+      barEl = bar
+      syncBarInset()
 
       // `shielded=1` tells the panel it may use the full height: the no-drag
       // shield below carves this strip out of the window drag region.
@@ -1158,7 +1220,7 @@ window.__ModuleLoader__.load({
       window.addEventListener('message', onMessage)
       // Keep the body-level overlay aligned with the column it covers. Passive +
       // capture: the column may scroll inside a scroller we do not own.
-      window.addEventListener('resize', trackOverlay)
+      window.addEventListener('resize', onViewportChange)
       document.addEventListener('scroll', trackOverlay, true)
       tryMount()
       try { watchSessionRemovals(ctx) } catch (error) { /* the rest of the panel still works */ }
@@ -1172,7 +1234,7 @@ window.__ModuleLoader__.load({
             try { if (typeof sessionListUnsub === 'function') sessionListUnsub() } catch (error) { /* ignore */ }
             sessionListUnsub = null
             window.removeEventListener('message', onMessage)
-            window.removeEventListener('resize', trackOverlay)
+            window.removeEventListener('resize', onViewportChange)
             document.removeEventListener('scroll', trackOverlay, true)
             document.removeEventListener('dsh-panel-activate', onPanelActivate)
             document.removeEventListener('click', onDocumentClick, true)
