@@ -413,6 +413,119 @@
   .toast.err { background: color-mix(in srgb, var(--tb-err) 16%, var(--tb-bg-1)); }
   .toast.ok { background: color-mix(in srgb, var(--tb-ok) 14%, var(--tb-bg-1)); }
   .empty { color: var(--tb-text-dim); }
+  /* ==================== glass pass ====================
+     One material for every surface that floats or that content scrolls under, so
+     the panel reads as layered glass instead of "some boxes are blurry". Blur
+     needs something behind it to be visible, hence the wash on .app: without it
+     a translucent layer over a flat fill is just a slightly wrong solid. */
+  :root {
+    --tb-glass-blur: saturate(1.15) blur(16px);
+    --tb-glass-blur-strong: saturate(1.2) blur(24px);
+    --tb-glass: color-mix(in srgb, var(--tb-bg) 72%, transparent);
+    --tb-glass-1: color-mix(in srgb, var(--tb-bg-1) 74%, transparent);
+    --tb-glass-2: color-mix(in srgb, var(--tb-bg-2) 72%, transparent);
+    --tb-glass-line: color-mix(in srgb, var(--tb-text) 9%, transparent);
+  }
+  .app {
+    background:
+      radial-gradient(1200px 620px at 12% -10%, color-mix(in srgb, var(--tb-accent) 9%, transparent), transparent 62%),
+      radial-gradient(900px 520px at 108% 8%, color-mix(in srgb, var(--tb-text) 5%, transparent), transparent 58%),
+      var(--tb-bg-1);
+  }
+  .bar, .foot {
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+    border-color: var(--tb-glass-line);
+  }
+  .folders {
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+    border-right-color: var(--tb-glass-line);
+  }
+  .list { background: var(--tb-glass); }
+  .reader { background: transparent; }
+  .reader-head {
+    background: var(--tb-glass);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    border-bottom-color: var(--tb-glass-line);
+  }
+  .thread-head {
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+    border-bottom-color: var(--tb-glass-line);
+  }
+  .ai, #rules, #sessions, .compose {
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    border-top-color: var(--tb-glass-line);
+  }
+  .ai-head {
+    background: var(--tb-glass-2);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+    border-bottom-color: var(--tb-glass-line);
+  }
+  .selmenu {
+    background: var(--tb-glass-2);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    border-color: var(--tb-glass-line);
+  }
+  .sess {
+    background: var(--tb-glass);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+    border-color: var(--tb-glass-line);
+  }
+  .chat-msg.assistant {
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+    border-color: var(--tb-glass-line);
+  }
+  .chat-msg.user { background: color-mix(in srgb, var(--tb-accent) 15%, transparent); }
+  .input, .textarea {
+    background: color-mix(in srgb, var(--tb-bg) 82%, transparent);
+    border-color: var(--tb-glass-line);
+  }
+
+  /* One button shape for every action. The AI group used to differ by fill, which
+     read as "unstyled" rather than "grouped"; it is now the same pill with a
+     single unambiguous marker: an accent dot, the way a status list marks a row. */
+  .actions { gap: 7px; }
+  .actions .btn {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 12px;
+    line-height: 1;
+    font-size: 12.5px;
+  }
+  .actions .btn.ai-act {
+    background: transparent;
+    border-color: var(--tb-border);
+    color: var(--tb-text-dim);
+  }
+  .actions .btn.ai-act::before {
+    content: '';
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--tb-accent);
+    flex: none;
+  }
+  .actions .btn.ai-act:hover {
+    background: color-mix(in srgb, var(--tb-accent) 14%, transparent);
+    color: var(--tb-text);
+    border-color: color-mix(in srgb, var(--tb-accent) 42%, transparent);
+  }
   [hidden] { display: none !important; }
 </style>
 </head>
