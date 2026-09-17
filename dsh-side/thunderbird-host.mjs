@@ -1035,13 +1035,21 @@ export function apply(ctx, config) {
     console.log('[dsh-thunderbird] registered ' + definitions.length + ' mail tools')
   }
 
-  // Local images a signature points at (D:\Logo\…). A file:// URL cannot load in
-  // the browser, so the panel asks for the bytes instead. Confined to configured
-  // roots, because an unconfined version of this would be a general file-read
-  // endpoint handed to a web page.
+  // Local images a signature points at. A file:// URL cannot load in the browser,
+  // so the panel asks for the bytes instead. Confined to configured roots, because
+  // an unconfined version of this would be a general file-read endpoint handed to
+  // a web page.
+  //
+  // The default is what Thunderbird's own signatures actually reference — Foxmail
+  // stores them under its install directory, NOT wherever the user keeps their
+  // logo files, so a "sensible" default guess produced a 403 on every request.
   const LOCAL_IMAGE_ROOTS = (Array.isArray(settings.imageRoots) && settings.imageRoots.length
     ? settings.imageRoots
-    : [join('D:', 'Logo')]).map((root) => String(root))
+    : [
+      'C:\\Foxmail 7.2\\Global\\Signatures',
+      'C:\\Foxmail 7.2\\Global\\Signatures\\images',
+      'D:\\Logo',
+    ]).map((root) => String(root))
 
   const normalizePath = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
 

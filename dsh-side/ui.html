@@ -967,18 +967,48 @@ function flatten (accounts) {
   return out
 }
 
-function setError (message) {
-  var el = $('toast-err')
+// One toast at a time per strip, dismissed after three seconds, with an explicit
+// × — and it stays put while the pointer is over it, because a long error is
+// exactly the one you want to finish reading.
+var TOAST_MS = 3000
+var toastTimers = {}
+
+function showToast (id, message) {
+  var el = $(id)
+  if (toastTimers[id]) { clearTimeout(toastTimers[id]); toastTimers[id] = null }
   if (!message) { el.hidden = true; el.textContent = ''; return }
-  el.textContent = message
   el.hidden = false
+  el.textContent = ''
+  el.style.display = 'flex'
+  el.style.alignItems = 'center'
+  el.style.gap = '10px'
+  var text = document.createElement('span')
+  text.textContent = message
+  text.style.cssText = 'flex:1 1 auto;min-width:0'
+  var close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'linkbtn'
+  close.textContent = '✕'
+  close.title = '关闭'
+  close.style.cssText = 'flex:none;font-size:13px;line-height:1;text-decoration:none;opacity:.75'
+  close.onclick = function (event) { event.stopPropagation(); showToast(id, '') }
+  el.appendChild(text)
+  el.appendChild(close)
+  toastTimers[id] = setTimeout(function () { showToast(id, '') }, TOAST_MS)
+  el.onmouseenter = function () {
+    if (toastTimers[id]) { clearTimeout(toastTimers[id]); toastTimers[id] = null }
+  }
+  el.onmouseleave = function () {
+    toastTimers[id] = setTimeout(function () { showToast(id, '') }, 1500)
+  }
+}
+
+function setError (message) {
+  showToast('toast-err', message)
 }
 
 function setNotice (message) {
-  var el = $('toast-ok')
-  if (!message) { el.hidden = true; el.textContent = ''; return }
-  el.textContent = message
-  el.hidden = false
+  showToast('toast-ok', message)
 }
 
 function renderChips () {
@@ -1597,7 +1627,10 @@ function whiteTile (img, mode) {
     var b = px[i + 2]
     var min = Math.min(r, g, b)
     var max = Math.max(r, g, b)
-    return min > 224 && (max - min) < 24
+    // Only GENUINELY white. At 224 the fill also swallowed the pale greys that
+    // anti-aliased artwork and JPEG noise are made of, which is what ate into the
+    // logo instead of just its background.
+    return min > 242 && (max - min) < 16
   }
 
   var seen = new Uint8Array(w * h)
@@ -1671,27 +1704,6 @@ function whiteTile (img, mode) {
     px[i + 3] = Math.round(255 * a)
   }
 
-  // Everything the fill reached is background. The one ring of pixels just
-  // outside it is the anti-aliased outline, so it gets the same treatment even
-  // though the fill stopped there.
-  var outline = []
-  for (var qy = 0; qy < h; qy++) {
-    for (var qx = 0; qx < w; qx++) {
-      var qi = qy * w + qx
-      if (seen[qi] === 1) continue
-      if (px[qi * 4 + 3] < 40) continue
-      var touches = false
-      for (var dy = -1; dy <= 1 && !touches; dy++) {
-        for (var dx = -1; dx <= 1; dx++) {
-          var nx = qx + dx
-          var ny = qy + dy
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
-          if (seen[ny * w + nx] === 1) { touches = true; break }
-        }
-      }
-      if (touches) outline.push(qi)
-    }
-  }
   for (var f = 0; f < w * h; f++) {
     if (seen[f] !== 1) continue
     var fi = f * 4
@@ -1702,12 +1714,10 @@ function whiteTile (img, mode) {
     if (px[fi + 3] < 40) { px[fi + 3] = 0; continue }
     unmix(fi, alphaAt(fi))
   }
-  for (var e2 = 0; e2 < outline.length; e2++) {
-    var ei = outline[e2] * 4
-    if (px[ei + 3] < 40) { px[ei + 3] = 0; continue }
-    var ea = alphaAt(ei)
-    if (ea < 1) unmix(ei, ea)
-  }
+  // There used to be a second pass over a one-pixel ring OUTSIDE the filled
+  // region. That ring is where anti-aliased artwork lives, and solving it pulled
+  // mid-tones toward black — it chewed the outline. The fill's own soft ramp
+  // already covers the halo, so the ring pass is gone.
 
   ctx.putImageData(frame, 0, 0)
   try {
@@ -3601,7 +3611,15 @@ function openAiTab () {
   }).catch(function (error) {
     state.aiRight = false
     document.documentElement.classList.remove('ai-mirrored')
-    setError('没能打开右侧边栏 AI 标签：' + String((error && error.message) || error) + '（已回退到面板内）')
+    // Show it in the pane, not only as a toast: a toast is gone in three seconds
+    // and this is the one message that has to survive long enough to be copied.
+    state.ai.open = true
+    state.ai.busy = false
+    state.ai.text = ''
+    state.ai.model = ''
+    state.ai.title = 'AI · 右侧边栏打开失败'
+    state.ai.error = '没能打开右侧边栏 AI 标签：' + String((error && error.message) || error) + '（已回退到面板内，请把这句话发给我）'
+    renderAi()
   })
 }
 
