@@ -586,6 +586,26 @@
   }
   .compose .crow > label { width: 56px; font-size: 12.5px; }
   .compose .input { border-radius: 10px; padding: 8px 12px; }
+  // A real rich composer: the body is contenteditable, so pasted formatting, the
+  // HTML signature and its images all survive — which is what "支持 HTML" means.
+  .richbody {
+    min-height: 300px;
+    max-height: 46vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    outline: none;
+    font-size: 13.5px;
+    line-height: 1.75;
+  }
+  .richbody:empty::before,
+  .richbody:has(> br:only-child)::before {
+    content: attr(data-placeholder);
+    color: var(--tb-text-dim);
+    pointer-events: none;
+  }
+  .richbody blockquote { border-left: 2px solid var(--tb-border-strong); margin: 0 0 8px; padding-left: 10px; color: var(--tb-text-dim); }
+  .richbody img { max-width: 100%; }
+  .sigedit { min-height: 150px; overflow: auto; white-space: pre-wrap; }
   .compose textarea.textarea { min-height: 260px; border-radius: 12px; padding: 12px; font-size: 13.5px; line-height: 1.7; }
 
   /* Every bottom pane is a floating window now, not just the composer: they are
@@ -763,7 +783,7 @@
     <div class="crow"><label>收件人</label><input class="input" id="c-to" placeholder="a@b.com, c@d.com"></div>
     <div class="crow"><label>抄送</label><input class="input" id="c-cc"></div>
     <div class="crow"><label>主题</label><input class="input" id="c-subject"></div>
-    <textarea class="textarea" id="c-body" placeholder="正文（纯文本）"></textarea>
+    <div class="textarea richbody" id="c-body" contenteditable="true" data-placeholder="正文（支持 HTML，可以直接粘贴排版）"></div>
     <div class="sigbar">
       <div class="sigrow">
         <span class="siglbl">签名</span>
@@ -2011,12 +2031,17 @@ function startCompose (message) {
     $('c-to').value = emailOf(message.author)
     $('c-cc').value = ''
     $('c-subject').value = /^re:/i.test(subject) ? subject : 'Re: ' + subject
-    $('c-body').value = '\n\n-------- 原邮件 --------\n' + nameOf(message.author) + ' 写于 ' + fmtFull(message.date) + '\n'
+    // The reply is HTML from the start: a real blockquote header, so the quoted
+    // part stays visually distinct instead of being dashes in a plain body.
+    $('c-body').innerHTML = '<p><br></p><blockquote>'
+      + '<div>' + escapeHtml(nameOf(message.author)) + ' 写于 ' + escapeHtml(fmtFull(message.date)) + '</div>'
+      + '<div>' + escapeHtml(String(message.subject || '')) + '</div>'
+      + '</blockquote>'
   } else {
     $('c-to').value = ''
     $('c-cc').value = ''
     $('c-subject').value = ''
-    $('c-body').value = ''
+    $('c-body').innerHTML = ''
   }
 }
 
@@ -2038,16 +2063,14 @@ function sendMail () {
   sendButton.textContent = '发送中…'
   var identity = $('c-from') && $('c-from').value ? $('c-from').value : ''
   var chosenSig = activeSigOption()
-  var isHtmlSig = !!(chosenSig && (chosenSig.html || /<[a-z][\s\S]*?>/i.test(String(chosenSig.text || ''))))
-  var sigHtml = isHtmlSig ? String(chosenSig.text || '') : ''
-  // The signature is no longer inside the textarea (it is previewed beside it),
-  // so everything in the body is the user's own text.
-  var typed = String($('c-body').value || '')
   var params = {
     to: to,
     cc: $('c-cc').value.trim(),
     subject: $('c-subject').value,
-    body: plainToHtml(typed) + sigHtml,
+    // The editor IS the HTML — pasted formatting, the signature and its images —
+    // so nothing is converted here; the signature is re-attached from its
+    // original source (see composeHtml).
+    body: composeHtml(),
     isPlainText: false,
   }
   // Send as the account whose signature is in the body, not as whatever
@@ -2333,7 +2356,7 @@ function aiIntoReply () {
   $('compose').hidden = false
   if (!typedTo) $('c-to').value = state.current ? emailOf(state.current.author) : ''
   $('c-subject').value = /^re:/i.test(subject) ? subject : ('Re: ' + subject)
-  $('c-body').value = text + '\n'
+  $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
   setNotice('已填入撰写区，确认后再点发送')
 }
 
@@ -3816,26 +3839,56 @@ function sigPreviewEl () {
   return el
 }
 
+function escapeHtml (value) {
+  return String(value === undefined || value === null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// Signature images live on local disk (D:\Logo\…), and a file:// URL cannot load
+// inside the panel. Rewrite them through the host's reader FOR DISPLAY ONLY: the
+// sent HTML keeps the original src, so Thunderbird resolves and attaches the
+// images itself exactly as it does for its own signature.
+function rewriteLocalImages (root) {
+  var images = root.querySelectorAll('img')
+  for (var i = 0; i < images.length; i++) {
+    var src = String(images[i].getAttribute('src') || '')
+    if (!/^(file:|[a-zA-Z]:[\\/]|\\\\)/.test(src)) continue
+    images[i].setAttribute('src', '/api/thunderbird/local-image?path=' + encodeURIComponent(src))
+  }
+}
+
+// Everything the user typed, in HTML, plus the signature put back from its
+// ORIGINAL source — the editor's copy carries rewritten image URLs for display.
+function composeHtml () {
+  var clone = $('c-body').cloneNode(true)
+  var sig = clone.querySelector('[data-dsh-sig]')
+  if (sig) sig.remove()
+  return clone.innerHTML + (state.composeSigHtml || '')
+}
+
+// The signature is a block INSIDE the editor, not a preview beside it: with a
+// rich body there is no reason to keep the two apart, and this is what makes the
+// images and the formatting visible while writing.
 function applySelectedSignature () {
   var option = activeSigOption()
-  var host = sigPreviewEl()
-  host.innerHTML = ''
-  var head = document.createElement('div')
-  head.className = 'meta'
-  head.textContent = option
-    ? '签名预览 · ' + (option.name || '签名')
-    : '没有可用签名（点「新建」加一个）'
-  host.appendChild(head)
+  var editor = $('c-body')
+  var stale = editor.querySelector('[data-dsh-sig]')
+  if (stale) stale.remove()
+  state.composeSigHtml = ''
   if (!option) return
-  var rendered = document.createElement('div')
-  rendered.style.cssText = 'margin-top:6px;font-size:12.5px;line-height:1.7'
-  if (option.html || /<[a-z][\s\S]*?>/i.test(String(option.text || ''))) {
-    rendered.innerHTML = sanitize(String(option.text || ''))
-  } else {
-    rendered.style.whiteSpace = 'pre-wrap'
-    rendered.textContent = String(option.text || '')
+  var text = String(option.text || '')
+  var isHtml = option.html || /<[a-z][\s\S]*?>/i.test(text)
+  var wrap = document.createElement('div')
+  wrap.setAttribute('data-dsh-sig', '1')
+  wrap.style.cssText = 'margin-top:12px'
+  if (isHtml) wrap.innerHTML = sanitize(text)
+  else {
+    wrap.style.whiteSpace = 'pre-wrap'
+    wrap.textContent = text
   }
-  host.appendChild(rendered)
+  rewriteLocalImages(wrap)
+  editor.appendChild(wrap)
+  state.composeSigHtml = isHtml ? '<div style="margin-top:12px">' + sanitize(text) + '</div>' : ''
 }
 
 // The composer is opened from several places, so wrap it once instead of editing
@@ -4031,7 +4084,7 @@ $('ai-new').onclick = function () {
   }
   startCompose(null)
   $('c-subject').value = subject
-  $('c-body').value = text + '\n'
+  $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
   setNotice('已填入新邮件，填好收件人后发送')
 }
 $('ai-lang').onchange = function () { setNotice('翻译目标语言：' + this.value) }

@@ -1035,6 +1035,54 @@ export function apply(ctx, config) {
     console.log('[dsh-thunderbird] registered ' + definitions.length + ' mail tools')
   }
 
+  // Local images a signature points at (D:\Logo\…). A file:// URL cannot load in
+  // the browser, so the panel asks for the bytes instead. Confined to configured
+  // roots, because an unconfined version of this would be a general file-read
+  // endpoint handed to a web page.
+  const LOCAL_IMAGE_ROOTS = (Array.isArray(settings.imageRoots) && settings.imageRoots.length
+    ? settings.imageRoots
+    : [join('D:', 'Logo')]).map((root) => String(root))
+
+  const normalizePath = (value) => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+
+  const localImageHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    let target = String(param(req.url, 'path') || '')
+    if (!target) { sendJson(res, 400, { ok: false, error: 'path query parameter is required' }); return }
+    try { target = decodeURIComponent(target) } catch (error) { /* already decoded */ }
+    if (/^file:/i.test(target)) {
+      try { target = fileURLToPath(target) } catch (error) { sendJson(res, 400, { ok: false, error: 'not a file url' }); return }
+    }
+    const normalized = normalizePath(target)
+    const allowed = LOCAL_IMAGE_ROOTS.some((root) => {
+      const base = normalizePath(root)
+      return base !== '' && (normalized === base || normalized.startsWith(base + '/'))
+    })
+    if (!allowed) {
+      sendJson(res, 403, { ok: false, error: 'path is outside the allowed image roots: ' + LOCAL_IMAGE_ROOTS.join(', ') })
+      return
+    }
+    try {
+      const bytes = await readFile(target)
+      if (bytes.length > 6 * 1024 * 1024) { sendJson(res, 200, { ok: false, error: 'image larger than 6 MB' }); return }
+      const type = /\.png$/i.test(target) ? 'image/png'
+        : /\.(jpe?g)$/i.test(target) ? 'image/jpeg'
+          : /\.gif$/i.test(target) ? 'image/gif'
+            : /\.webp$/i.test(target) ? 'image/webp'
+              : /\.svg$/i.test(target) ? 'image/svg+xml'
+                : 'application/octet-stream'
+      if (res.writableEnded) return
+      res.writeHead(200, {
+        'content-type': type,
+        'cache-control': 'private, max-age=600',
+        'access-control-allow-origin': '*',
+      })
+      res.end(bytes)
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    }
+  }
+
   // ---- mount ---------------------------------------------------------------
 
   const routes = [
@@ -1056,6 +1104,7 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/file', sessionFileHandler],
     ['/api/thunderbird/session/transcript', transcriptHandler],
     ['/api/thunderbird/image', imageProxyHandler],
+    ['/api/thunderbird/local-image', localImageHandler],
   ]
   const disposers = []
   for (let i = 0; i < routes.length; i++) {
