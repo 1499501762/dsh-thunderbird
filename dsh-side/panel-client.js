@@ -79,8 +79,57 @@ window.__ModuleLoader__.load({
     var open = false
     var probeTimer = null
     var activeCtx = null
-    // Disposer for our own right-sidebar tab type, registered once on first use.
-    var aiTabDisposer = null
+    // Disposers for our own right-sidebar tab types, registered once on first
+    // use. These MUST live at this scope: the message handler is re-created per
+    // event, so a `var` inside it reset to null every time and the second open
+    // tried to register a type that was already registered — which threw and sent
+    // the open down the opaque-origin browser fallback.
+    var tabDisposers = { ai: null, session: null }
+
+    // The two tabs this panel contributes to DSH's native right column.
+    var TAB_TYPES = {
+      ai: { id: 'dsh-thunderbird:ai', title: 'Thunderbird AI', description: '当前邮件线的 AI 输出' },
+      session: { id: 'dsh-thunderbird:session', title: '邮件会话', description: '这条邮件线的 DSH 会话' },
+    }
+
+    function ensureTab (sidebar, react, kind) {
+      var spec = TAB_TYPES[kind]
+      if (tabDisposers[kind] !== null) return 'already'
+      if (!react || typeof react.createElement !== 'function') return 'no-react'
+      if (typeof sidebar.registerTab !== 'function') return 'no-registerTab'
+      try {
+        tabDisposers[kind] = sidebar.registerTab({
+          id: spec.id,
+          title: spec.title,
+          description: spec.description,
+          order: kind === 'ai' ? 60 : 58,
+          // One tab per type focuses instead of stacking: this is a view of
+          // "the current thing", not a document you open many of.
+          single: true,
+          component: function (props) {
+            var meta = (props && props.tab && props.tab.meta) || {}
+            var src = meta.url || (props && props.tab && props.tab.path) || (location.origin + UI_URL)
+            return react.createElement('iframe', {
+              src: src,
+              title: spec.title,
+              style: { flex: '1 1 auto', width: '100%', height: '100%', border: 0, background: 'transparent' },
+            })
+          },
+        })
+        return 'yes'
+      } catch (error) {
+        var message = String((error && error.message) || error)
+        // A hot reload can leave the previous registration alive while this
+        // instance's disposer is gone; the TYPE existing is all the open needs,
+        // so treat that one error as done rather than falling back to the browser
+        // tab, which would silently lose the theme and the bridge.
+        if (message.indexOf('already registered') >= 0) {
+          tabDisposers[kind] = function () {}
+          return 'already-registered'
+        }
+        return 'threw: ' + message
+      }
+    }
 
     function el (tag, attrs, kids) {
       var node = document.createElement(tag)
@@ -578,7 +627,62 @@ window.__ModuleLoader__.load({
           return
         }
 
-        if (msg.type === 'panel/open-ai') {
+        if (msg.type === 'probe/services') {
+          // Temporary diagnostic: what can the client half actually reach, and
+          // what does each surface offer? Guessing here costs a restart per try.
+          var describe = function (name) {
+            var svc = serviceOf(ctx, name)
+            if (svc === undefined) return { name: name, present: false }
+            var own = []
+            var proto = []
+            try { own = Object.keys(svc) } catch (error) { own = ['<unreadable>'] }
+            try {
+              var p = Object.getPrototypeOf(svc)
+              if (p && p !== Object.prototype) proto = Object.getOwnPropertyNames(p)
+            } catch (error) { /* ignore */ }
+            return { name: name, present: true, own: own, proto: proto }
+          }
+          replyTo(event.source, msg.id, {
+            ok: true,
+            result: {
+              services: ['layout', 'sessions', 'uiWorkspace', 'workspaces', 'betterSidebar'].map(describe),
+              tabs: (function () {
+                var sidebar = serviceOf(ctx, 'betterSidebar')
+                if (sidebar === undefined) return []
+                try {
+                  return sidebar.getTabs().map(function (t) {
+                    return { id: t.id, enabled: sidebar.isTabEnabled(t.id) }
+                  })
+                } catch (error) { return ['<threw: ' + String(error && error.message) + '>'] }
+              })(),
+            },
+          })
+          return
+        }
+
+        // Open one of our own tab types in DSH's native right column.
+        //
+        // Registering our OWN type rather than using the built-in browser one is
+        // not cosmetic: the browser builtin renders a sandbox WITHOUT
+        // allow-same-origin (it needs a loopback whitelist too), so inside it the
+        // panel would be a different origin and theme mirroring plus the
+        // postMessage bridge would both die.
+        //
+        // `url` is what makes the open land in the NATIVE column: the sidebar
+        // routes an open carrying a path/url through its native surface, and an
+        // open without one into its own bottom workbench.
+        // Open one of our own tab types in DSH's native right column.
+        //
+        // Registering our OWN type rather than using the built-in browser one is
+        // not cosmetic: the browser builtin renders a sandbox WITHOUT
+        // allow-same-origin (it needs a loopback whitelist too), so inside it the
+        // panel would be a different origin and theme mirroring plus the
+        // postMessage bridge would both die.
+        //
+        // `url` is what makes the open land in the NATIVE column: the sidebar
+        // routes an open carrying a path/url through its native surface, and an
+        // open without one into its own bottom workbench.
+        if (msg.type === 'panel/open-ai' || msg.type === 'panel/open-tab') {
           var facts = []
           var sidebar = serviceOf(activeCtx, 'betterSidebar')
           if (sidebar === undefined) {
@@ -588,52 +692,27 @@ window.__ModuleLoader__.load({
             })
             return
           }
-          facts.push('version=' + String(sidebar.version || '?'))
-          facts.push('features=' + String((sidebar.features || []).join('|') || '-'))
-
-          // Registering our OWN tab type, not the built-in browser one: the
-          // browser builtin renders a sandbox WITHOUT allow-same-origin (it needs
-          // a loopback whitelist too), so inside it the panel would be a different
-          // origin — theme mirroring and the postMessage bridge would both die.
-          var AI_TAB = 'dsh-thunderbird:ai'
-          var AI_URL = location.origin + UI_URL + '?view=ai'
+          // `panel/open-ai` is kept as a name because the panel's mirror flow asks
+          // for it by name; it is the AI case of the same open.
+          var kind = msg.type === 'panel/open-ai' ? 'ai' : (msg.kind === 'session' ? 'session' : 'ai')
+          var spec = TAB_TYPES[kind]
           var react = null
           try { react = require('react') } catch (error) { react = null }
-          facts.push('react=' + (react && typeof react.createElement === 'function' ? 'yes' : 'no'))
+          facts.push('version=' + String(sidebar.version || '?'))
+          facts.push('features=' + String((sidebar.features || []).join('|') || '-'))
+          facts.push('react=' + (react ? 'yes' : 'no'))
           facts.push('getSnapshot=' + (typeof sidebar.getSnapshot === 'function'))
           facts.push('registerTab=' + (typeof sidebar.registerTab === 'function'))
+          facts.push('registered=' + ensureTab(sidebar, react, kind))
 
-          if (aiTabDisposer === null && react && typeof react.createElement === 'function' && typeof sidebar.registerTab === 'function') {
-            try {
-              aiTabDisposer = sidebar.registerTab({
-                id: AI_TAB,
-                title: 'Thunderbird AI',
-                description: '当前邮件线的 AI 输出与会话',
-                order: 60,
-                single: true,
-                component: function (props) {
-                  var meta = (props && props.tab && props.tab.meta) || {}
-                  var url = meta.url || (props && props.tab && props.tab.path) || AI_URL
-                  return react.createElement('iframe', {
-                    src: url,
-                    title: 'Thunderbird AI',
-                    style: { flex: '1 1 auto', width: '100%', height: '100%', border: 0, background: 'transparent' },
-                  })
-                },
-              })
-              facts.push('registered=yes')
-            } catch (error) {
-              facts.push('registerTab threw: ' + String((error && error.message) || error))
-            }
-          } else if (aiTabDisposer !== null) {
-            facts.push('registered=already')
-          }
+          var url = location.origin + UI_URL + (msg.url || (kind === 'ai' ? '?view=ai' : ''))
+          var title = msg.title || spec.title
 
-          if (aiTabDisposer === null) {
+          if (tabDisposers[kind] === null) {
             // No React, so our own tab type cannot exist. Fall back to the builtin
             // browser tab and SAY SO, because it will look wrong (opaque origin).
             try {
-              sidebar.openTab({ type: 'browser', url: AI_URL, title: 'Thunderbird AI' })
+              sidebar.openTab({ type: 'browser', url: url, title: title })
               replyTo(event.source, msg.id, { ok: false, error: '只能退回内置 browser 标签（跨源，面板会失去主题和会话桥）：' + facts.join(' ') })
             } catch (error) {
               replyTo(event.source, msg.id, { ok: false, error: facts.join(' ') + ' / openTab threw: ' + String((error && error.message) || error) })
@@ -641,11 +720,50 @@ window.__ModuleLoader__.load({
             return
           }
 
+          // The native column is DSH's, and it can be collapsed. An open into a
+          // collapsed column looks EXACTLY like "the button did nothing", which
+          // is the report this whole path exists to answer — so open it, then
+          // MEASURE it and say what actually happened instead of assuming.
+          var layout = serviceOf(activeCtx, 'layout')
+          if (layout !== undefined && typeof layout.openRightbar === 'function') {
+            try { layout.openRightbar(); facts.push('rightbar=open') } catch (error) { facts.push('rightbar=' + String((error && error.message) || error)) }
+          } else {
+            facts.push('rightbar=unavailable')
+          }
+          // Measure OUR OWN tab frame. Every other candidate lies: the column is
+          // a zero-width grid track (the sidebar draws as an absolutely
+          // positioned overlay inside it), and `nativeTabHost` also matches the
+          // centre column's host. What matters is only whether the frame we just
+          // asked for is painted with a real width. -1 means "cannot tell", and
+          // the panel stays quiet for it rather than crying wolf.
+          var ourTabWidth = function () {
+            var frames = document.querySelectorAll('iframe')
+            for (var i = 0; i < frames.length; i++) {
+              var src = String(frames[i].src || '')
+              if (src.indexOf('/api/thunderbird/ui') < 0) continue
+              if (src.indexOf('view=') < 0) continue
+              var rect = frames[i].getBoundingClientRect()
+              if (rect.width > 0) return Math.round(rect.width)
+            }
+            return -1
+          }
+
           try {
-            sidebar.openTab({ type: AI_TAB, url: AI_URL, title: 'Thunderbird AI' })
+            sidebar.openTab({ type: spec.id, url: url, title: title })
           } catch (error) {
             replyTo(event.source, msg.id, { ok: false, error: facts.join(' ') + ' / openTab threw: ' + String((error && error.message) || error) })
             return
+          }
+
+          // A `single: true` type dedupes onto the instance that is already open,
+          // and a dedupe focus does NOT carry the new seed — so re-opening the
+          // session tab for a DIFFERENT mail thread kept pointing at the old one.
+          // Re-target it explicitly; `updateTab` is the API for exactly this.
+          if (typeof sidebar.updateTab === 'function') {
+            try {
+              sidebar.updateTab(spec.id, { path: url, title: title })
+              facts.push('retargeted')
+            } catch (error) { facts.push('updateTab=' + String((error && error.message) || error)) }
           }
 
           // openTab returns silently for an unknown or disabled type, so verify
@@ -655,12 +773,23 @@ window.__ModuleLoader__.load({
           // workbench (SidebarState carries bottomSplits, not the native tabs). An
           // earlier version counted tabs there and reported failure for an open
           // that had actually worked. The honest signals are that the type is
-          // registered and that it is not switched off in the side-card settings.
-          var enabled = typeof sidebar.isTabEnabled === 'function' ? sidebar.isTabEnabled(AI_TAB) : true
+          // registered, that it is not switched off in the side-card settings, and
+          // how wide the column ended up.
+          var enabled = typeof sidebar.isTabEnabled === 'function' ? sidebar.isTabEnabled(spec.id) : true
           facts.push('enabled=' + enabled)
-          replyTo(event.source, msg.id, enabled
-            ? { ok: true, result: facts.join(' ') }
-            : { ok: false, error: '这个标签类型在右侧边栏设置里被关掉了，启用它即可：' + facts.join(' ') })
+          // The column is React state; its width can land a frame later. Frame
+          // callbacks are NOT reliable here — a panel iframe that is obscured or
+          // in a background tab gets no frames at all, and the reply then never
+          // arrives, which looks exactly like the dead button this whole path
+          // exists to explain. A timer always fires.
+          var settle = function () {
+            var width = ourTabWidth()
+            replyTo(event.source, msg.id, enabled
+              ? { ok: true, result: { facts: facts.join(' '), title: title, rightbarWidth: width } }
+              : { ok: false, error: '这个标签类型在右侧边栏设置里被关掉了，启用它即可：' + facts.join(' ') })
+          }
+          if (ourTabWidth() > 0) settle()
+          else setTimeout(settle, 250)
           return
         }
 

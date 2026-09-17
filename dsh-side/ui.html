@@ -198,6 +198,40 @@
   .ai-model { color: var(--tb-text-dim); font-size: 11px; }
   .ai-body { overflow: auto; padding: 4px 14px 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.75; }
   .ai-body strong { font-weight: 700; }
+
+  /* Rendered AI output is real HTML now, so it must stop being pre-wrap: the
+     preserved whitespace would double every block gap the elements already make. */
+  .ai-body.md { white-space: normal; }
+  .ai-body.md > *:first-child { margin-top: 0; }
+  .ai-body.md > *:last-child { margin-bottom: 0; }
+  .ai-body.md p { margin: 0 0 9px; }
+  .ai-body.md h3,
+  .ai-body.md h4 { margin: 16px 0 7px; font-size: 13.5px; font-weight: 700; letter-spacing: .2px; }
+  .ai-body.md h5,
+  .ai-body.md h6 { margin: 13px 0 6px; font-size: 12.5px; font-weight: 700; color: var(--tb-text-dim); }
+  .ai-body.md ul,
+  .ai-body.md ol { margin: 0 0 9px; padding-left: 20px; }
+  .ai-body.md li { margin: 3px 0; }
+  .ai-body.md li::marker { color: var(--tb-text-dim); }
+  .ai-body.md blockquote {
+    margin: 0 0 9px;
+    padding: 2px 0 2px 11px;
+    border-left: 2px solid var(--tb-border-strong);
+    color: var(--tb-text-dim);
+  }
+  .ai-body.md blockquote p { margin: 0 0 4px; }
+  .ai-body.md code {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11.5px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--tb-bg) 70%, transparent);
+    border: 1px solid var(--tb-glass-line);
+  }
+  .ai-body.md pre { margin: 0 0 9px; padding: 9px 11px; overflow: auto; border-radius: var(--tb-r-md); background: color-mix(in srgb, var(--tb-bg) 72%, transparent); border: 1px solid var(--tb-glass-line); }
+  .ai-body.md pre code { padding: 0; border: 0; background: transparent; }
+  .ai-body.md hr { border: 0; border-top: 1px solid var(--tb-glass-line); margin: 14px 0; }
+  .ai-body.md a { color: var(--tb-accent); }
   #ai-askrow { padding: 0 14px 8px; }
   #ai-askrow .input { flex: 1; }
   .selmenu { position: fixed; z-index: 50; display: flex; gap: 2px; padding: 4px; background: var(--tb-bg-2); border: 1px solid var(--tb-border-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.28); }
@@ -581,18 +615,104 @@
   html.ai-view #rules,
   html.ai-view #sessions,
   html.ai-view #compose,
+  html.ai-view #signatures,
   html.ai-view #selmenu { display: none !important; }
+  html.ai-view .app { padding: 0; padding-top: var(--tb-inset-top); }
   html.ai-view #ai { flex: 1 1 auto; max-height: none; border-top: 0; box-shadow: none; }
-  html.ai-view .ai-head { padding: 12px 16px 10px; }
-  html.ai-view .ai-body { flex: 1 1 auto; padding: 14px 16px 20px; font-size: 13.5px; }
-  html.ai-view #ai-askrow { padding: 0 16px 10px; }
-  /* Reply/new-mail write into the panel's composer, which is in another tab. */
+  /* A real page header, not the floating window's title bar with the buttons
+     stripped out — an empty row with a lone 复制 in it was most of what made this
+     tab read as unfinished. */
+  html.ai-view .ai-head {
+    flex: none;
+    flex-wrap: nowrap;
+    gap: 9px;
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--tb-glass-line);
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+  }
+  html.ai-view .ai-head .ai-title { font-size: 13px; font-weight: 600; }
+  html.ai-view .ai-head .ai-model {
+    font-size: 10.5px;
+    color: var(--tb-text-dim);
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 999px;
+    padding: 2px 9px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 34%;
+  }
+  html.ai-view .ai-head .btn { flex: none; }
+  html.ai-view .ai-body { flex: 1 1 auto; padding: 16px 18px 24px; font-size: 13.5px; max-width: 78ch; }
+  html.ai-view #ai-askrow {
+    flex: none;
+    padding: 11px 16px;
+    border-top: 1px solid var(--tb-glass-line);
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+  }
+  html.ai-view #ai-empty { padding: 8px 2px; }
+  /* 「填入回复 / 填入新邮件」 write into the composer, which lives in the PANEL —
+     in this frame they would write into elements that are not there and appear to
+     do nothing, so they stay off. 「替换选中」 is relayed back to the panel over
+     the AI channel instead, so the one insert that makes sense from a tab works.
+     「关闭」 closes the floating overlay; as a tab the container IS the tab. */
   html.ai-view #ai-reply,
   html.ai-view #ai-new,
-  /* 「关闭」 closes the floating overlay in the panel. As a sidebar TAB there is
-     nothing to close — the tab is the container — and hiding the block there
-     produced an empty column. */
   html.ai-view #ai-close { display: none !important; }
+
+  /* ---------- the session tab ----------
+     DSH's own right column is a tab host, and its kinds are the ones the sidebar
+     plugin registers (editor / git / subagent / sidechat / terminal / browser /
+     diff). None of them renders an ARBITRARY existing session, and DSH ships no
+     requireable conversation component, so this conversation is drawn here — on
+     top of the real session, through the same transcript and prompt calls the
+     panel already used. It is DSH's session; it is our window onto it. */
+  .sview {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+  .sview-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--tb-glass-line);
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+  }
+  .sview-title { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 45%; }
+  .sview-dir { font-size: 10.5px; color: var(--tb-text-dim); font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; max-width: 30%; }
+  .sview-body { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding: 0 14px 12px; }
+
+  /* As a tab the conversation IS the page: the block that was a 320px sub-panel
+     inside a floating window becomes the whole scrollable column. */
+  html.session-view .bar,
+  html.session-view .body,
+  html.session-view .foot,
+  html.session-view #ai,
+  html.session-view #rules,
+  html.session-view #sessions,
+  html.session-view #compose,
+  html.session-view #signatures,
+  html.session-view #selmenu,
+  html.session-view .searchbar { display: none !important; }
+  html.session-view .app { padding: 0; padding-top: var(--tb-inset-top); }
+  html.session-view #sview { display: flex !important; }
+  html.session-view .chat { margin-top: 0; border-top: 0; padding-top: 0; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  html.session-view .chat-status { padding: 9px 0 7px; }
+  html.session-view .chat-log { max-height: none; flex: 1 1 auto; min-height: 0; padding: 12px 2px 12px 0; margin-bottom: 0; }
+  html.session-view .chat-msg { font-size: 13px; padding: 10px 12px; }
+  html.session-view .chat-msg.user { margin-left: 12%; }
+  html.session-view .chat-input { flex: none; padding: 10px 0 0; border-top: 1px solid var(--tb-glass-line); }
+  html.session-view #sview-empty { padding: 18px 2px; }
 
   /* When the block really did move to the right sidebar, what is left behind in
      the panel must stop being a floating window. It used to keep its fixed
@@ -891,6 +1011,18 @@
       <button class="btn primary" id="ai-send">提问</button>
     </div>
     <div class="ai-body" id="ai-body"></div>
+  </div>
+
+  <div class="sview" id="sview" hidden>
+    <div class="sview-head">
+      <span class="ai-badge">DSH</span>
+      <span class="sview-title" id="sview-title">邮件会话</span>
+      <span class="sview-dir" id="sview-dir"></span>
+      <span class="grow"></span>
+      <button class="btn" id="sview-refresh">刷新</button>
+      <button class="btn" id="sview-main">在主区打开</button>
+    </div>
+    <div class="sview-body" id="sview-body"></div>
   </div>
 
   <div class="ai" id="rules" hidden>
@@ -1600,7 +1732,9 @@ function renderReader () {
   actions.appendChild(button('回复', function () { startCompose(message) }))
   actions.appendChild(button('AI 总结', function () { runAi('summarize') }))
   actions.appendChild(button('AI 翻译', function () { runAi('translate') }))
-  actions.appendChild(button('AI 改写', function () { openAsk('rewrite', bodyTextForAi(), '改写要求（如：更简洁、更正式、语气更硬）', 'AI 改写') }))
+  // No 「AI 改写」 here on purpose: rewriting a mail you are READING produces a
+  // block of text with nowhere to go. Rewriting belongs where there is a body to
+  // rewrite — the composer, via the selection menu.
   actions.appendChild(button('AI 回复草稿', function () { runAi('reply') }))
   actions.appendChild(button('AI 分类建议', function () { aiClassifyCurrent() }))
   actions.appendChild(button('用这封建规则', function () { ruleFromCurrent() }))
@@ -1608,7 +1742,7 @@ function renderReader () {
   var bound = thread ? sessionFor(thread.folderId, thread.subject) : null
   actions.appendChild(button(bound ? (bound.sessionId ? '打开 DSH 会话' : '完成挂载') : '建 DSH 会话', function () {
     if (bound && bound.sessionId) {
-      dshCall('session/open', { sessionId: bound.sessionId }).catch(function (error) { setError(error.message) })
+      openSessionTab(bound)
     } else if (bound) {
       bindThread(thread)
     } else {
@@ -2383,10 +2517,144 @@ function bodyTextForAi () {
   return ''
 }
 
+// ---------------------------------------------------------------- 邮件正文切分
+// A reply carries three things in one blob: what this person wrote, their
+// signature, and the entire conversation before them. "Translate this mail"
+// means the first one. Translating the other two buries the three sentences the
+// reader actually wanted — and they are not even written by this person.
+//
+// These are text heuristics, not a parser: every client marks the quoted part
+// differently, and the only common denominator is a handful of opener lines.
+// `[ \t]` rather than `\s` throughout, because `\s` spans newlines and would let
+// a pattern match across two unrelated lines.
+var QUOTE_CUT = [
+  /^[ \t]*-{2,}[ \t]*(原始邮件|原始郵件|转发邮件|轉發郵件|Original Message|Forwarded message)/im,
+  /^[ \t]*(发件人|發件人|寄件人|发信人)[ \t]*[:：]/m,
+  /^[ \t]*From[ \t]*:/m,
+  /^[ \t]*(在|On)[ \t].{0,120}(写道|寫道|wrote)[ \t]*[:：]?[ \t]*$/im,
+  /^[ \t]*_{8,}[ \t]*$/m,
+]
+
+var SIG_CUT = [
+  /^[ \t]*--[ \t]*$/m,
+  /^[ \t]*(best|kind|warm|many)[ \t]+(regards|wishes)[ \t]*[,，!！。]?[ \t]*$/im,
+  /^[ \t]*regards[ \t]*[,，!！。]?[ \t]*$/im,
+  /^[ \t]*(thanks|thank you|many thanks)[ \t]*[,&，!！。]?[ \t]*$/im,
+  /^[ \t]*(sincerely|cheers|br)[ \t]*[,，!！。]?[ \t]*$/im,
+  /^[ \t]*(此致|顺祝|祝好|敬礼|敬禮|商祺|谢谢|謝謝|感谢|感謝)[^\n]{0,14}$/m,
+]
+
+// The offset of the first pattern that matches, or -1.
+function firstMark (text, patterns) {
+  var at = -1
+  for (var i = 0; i < patterns.length; i++) {
+    var m = patterns[i].exec(text)
+    if (m && m.index >= 0 && (at < 0 || m.index < at)) at = m.index
+  }
+  return at
+}
+
+function topMailText () {
+  var text = String(bodyTextForAi() || '')
+  if (!text.trim()) return ''
+  var at = text.length
+  var quote = firstMark(text, QUOTE_CUT)
+  if (quote >= 0 && quote < at) at = quote
+  var sig = firstMark(text, SIG_CUT)
+  if (sig >= 0 && sig < at) at = sig
+  var head = text.slice(0, at).trim()
+  // Only bail out when the cut left NOTHING — that means the very first line was
+  // a signature or a quote opener, so the heuristics guessed wrong and a whole
+  // mail is more useful than an empty one. A SHORT head is not a failure: plenty
+  // of real mails are one line ("补发票合同"), and an earlier length threshold
+  // threw those away and translated the entire chain instead.
+  if (!head) return text.trim()
+  return head
+}
+
 function renderRich (text) {
   return String(text == null ? '' : text)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+}
+
+// Every AI prompt in this panel asks for Markdown — "先给一句话结论，再列最多 5 条
+// 要点" comes back as `## 一句话结论` and `- 要点`. renderRich only knew **bold**,
+// so the markers arrived literally and the pane was legible only because it
+// happened to be pre-wrap. This renders the shapes the prompts actually produce.
+function aiInline (text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, function (whole, label, href) {
+      return '<a href="' + href.replace(/"/g, '%22') + '" target="_blank" rel="noreferrer noopener">' + label + '</a>'
+    })
+}
+
+function renderAiMarkdown (text) {
+  var lines = String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n')
+  var out = []
+  var para = []
+  var list = null
+  var quote = []
+  var fence = false
+  var code = []
+
+  function flushPara () {
+    if (para.length) { out.push('<p>' + aiInline(para.join(' ')) + '</p>'); para = [] }
+  }
+  function flushList () {
+    if (list) { out.push('</' + list + '>'); list = null }
+  }
+  function flushQuote () {
+    if (!quote.length) return
+    out.push('<blockquote>' + quote.map(function (l) { return '<p>' + aiInline(l) + '</p>' }).join('') + '</blockquote>')
+    quote = []
+  }
+  function flushAll () { flushPara(); flushList(); flushQuote() }
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i]
+    if (/^\s*```/.test(line)) {
+      if (fence) { out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>'); code = []; fence = false }
+      else { flushAll(); fence = true }
+      continue
+    }
+    if (fence) { code.push(line); continue }
+    if (!line.trim()) { flushAll(); continue }
+
+    var heading = /^(#{1,6})\s+(.*)$/.exec(line)
+    if (heading) {
+      flushAll()
+      var level = Math.min(6, heading[1].length + 2)
+      out.push('<h' + level + '>' + aiInline(heading[2]) + '</h' + level + '>')
+      continue
+    }
+    var bullet = /^\s*[-*•]\s+(.*)$/.exec(line)
+    if (bullet) {
+      flushPara(); flushQuote()
+      if (list !== 'ul') { flushList(); out.push('<ul>'); list = 'ul' }
+      out.push('<li>' + aiInline(bullet[1]) + '</li>')
+      continue
+    }
+    var numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line)
+    if (numbered) {
+      flushPara(); flushQuote()
+      if (list !== 'ol') { flushList(); out.push('<ol>'); list = 'ol' }
+      out.push('<li>' + aiInline(numbered[1]) + '</li>')
+      continue
+    }
+    var quoted = /^\s*>\s?(.*)$/.exec(line)
+    if (quoted) { flushPara(); flushList(); quote.push(quoted[1]); continue }
+    var rule = /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.exec(line)
+    if (rule) { flushAll(); out.push('<hr>'); continue }
+    flushList(); flushQuote()
+    para.push(line)
+  }
+  if (fence && code.length) out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>')
+  flushAll()
+  return out.join('')
 }
 
 function renderAi () {
@@ -2410,7 +2678,7 @@ function renderAi () {
     body.textContent = state.ai.error
     return
   }
-  body.className = 'ai-body'
+  body.className = 'ai-body md'
   if (state.ai.busy) {
     var secs = Math.round((Date.now() - (state.ai.startedAt || Date.now())) / 1000)
     body.innerHTML = '<span class="ai-typing"><i></i><i></i><i></i></span> 思考中… ' + secs + ' 秒'
@@ -2421,13 +2689,19 @@ function renderAi () {
   // that paints nothing at all reads as broken.
   if (!state.ai.text) {
     body.innerHTML = AI_VIEW
-      ? '<div class="hint"><h3>还没有 AI 结果</h3>'
-        + '<p>这个标签会显示在面板里触发的 AI 动作：总结、翻译、改写、回复草稿、代写、提问、分类建议。</p>'
-        + '<p>在邮件列表或阅读栏点任意一个 <span class="code">AI</span> 按钮，结果就会出现在这里。</p></div>'
+      ? '<div class="hint" id="ai-empty">'
+        + '<h3>还没有 AI 结果</h3>'
+        + '<p>这个标签显示面板里触发的 AI 动作：<b>总结</b>、<b>翻译</b>、<b>回复草稿</b>、'
+        + '<b>分类建议</b>，以及对撰写区选中文字的<b>改写 / 翻译 / 提问</b>。</p>'
+        + '<p>在邮件列表或阅读栏点任意一个 <span class="code">AI</span> 按钮，结果就会出现在这里；'
+        + '写邮件时则选中正文再点右键。</p>'
+        + '<p class="meta">翻译只翻这封邮件自己的正文 —— 签名和引用的整条邮件链不会被翻，'
+        + '否则真正的几句话会被淹掉。</p>'
+        + '</div>'
       : ''
     return
   }
-  body.innerHTML = renderRich(state.ai.text)
+  body.innerHTML = renderAiMarkdown(state.ai.text)
 }
 
 var AI_TITLES = {
@@ -2538,7 +2812,14 @@ function runAi (action, opts) {
   // cleared by every launch that does not. A plain AI button therefore cannot
   // inherit the previous rewrite's selection.
   state.ai.editorRange = options.range || null
-  var text = options.text !== undefined ? options.text : bodyTextForAi()
+  // Translation is the one action whose input is not "the whole mail": it is the
+  // part of the mail this correspondent wrote. Summarise and reply still get
+  // everything, because the earlier messages ARE the context there.
+  var text
+  var narrow = false
+  if (options.text !== undefined) text = options.text
+  else if (action === 'translate') { text = topMailText(); narrow = true }
+  else text = bodyTextForAi()
   if (action !== 'draft' && !String(text || '').trim()) {
     setError('没有可用内容：这封邮件正文为空，可先用「在 Thunderbird 中打开」查看')
     return
@@ -2552,7 +2833,9 @@ function runAi (action, opts) {
   state.ai.action = action
   state.ai.contextText = text
   state.ai.ask = null
-  state.ai.title = options.title || AI_TITLES[action] || 'AI'
+  // The title says so, because "why is only part of my mail translated" is a
+  // question the panel should answer before it is asked.
+  state.ai.title = options.title || (narrow ? 'AI 翻译 · 仅这封正文' : (AI_TITLES[action] || 'AI'))
   if (state.ai.ticker) clearInterval(state.ai.ticker)
   state.ai.ticker = setInterval(function () {
     if (!state.ai.busy) { clearInterval(state.ai.ticker); state.ai.ticker = null; return }
@@ -4645,13 +4928,21 @@ function loadTranscript (record) {
     })
 }
 
+// The same chat state is drawn in two places — the floating 会话 window inside
+// the panel, and the whole-page 会话 tab in the right sidebar — so one function
+// decides which surface a re-render belongs to.
+function refreshChats () {
+  if (SESSION_VIEW) { renderSessionView(); return }
+  if (!$('sessions').hidden) renderSessions()
+}
+
 function watchTranscript (record) {
   var chat = chatOf(record.key)
   if (chat.timer) return
   chat.timer = setInterval(function () {
-    if ($('sessions').hidden) return
+    if (!SESSION_VIEW && $('sessions').hidden) return
     loadTranscript(record).then(function () {
-      renderSessions()
+      refreshChats()
       if (!chat.running) { clearInterval(chat.timer); chat.timer = null }
     })
   }, 2200)
@@ -4663,7 +4954,7 @@ function sendToSession (record, text) {
   if (!value) return
   chat.error = ''
   chat.sending = true
-  renderSessions()
+  refreshChats()
   // The first prompt of a session carries the standing context, so the agent
   // knows the working directory is this thread and does not need to be told
   // again on every follow-up.
@@ -4676,20 +4967,20 @@ function sendToSession (record, text) {
       return loadTranscript(record)
     })
     .then(function () {
-      renderSessions()
+      refreshChats()
       watchTranscript(record)
     })
     .catch(function (error) {
       chat.sending = false
       chat.error = String((error && error.message) || error)
-      renderSessions()
+      refreshChats()
     })
 }
 
 function stopSession (record) {
   dshCall('session/cancel', { sessionId: record.sessionId }, 20000)
     .then(function () { return loadTranscript(record) })
-    .then(renderSessions)
+    .then(refreshChats)
     .catch(function (error) { setError(String((error && error.message) || error)) })
 }
 
@@ -4760,7 +5051,7 @@ function chatBlock (record) {
       loadTranscript(record).then(function (result) {
         chat.loading = false
         if (result.running) watchTranscript(record)
-        if (!$('sessions').hidden) renderSessions()
+        refreshChats()
       })
     }
   }
@@ -4801,9 +5092,7 @@ function sessionRow (record) {
   var actions = document.createElement('div')
   actions.className = 'actions'
   if (record.sessionId) {
-    actions.appendChild(button('打开会话', function () {
-      dshCall('session/open', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
-    }))
+    actions.appendChild(button('打开会话', function () { openSessionTab(record) }))
     actions.appendChild(button('主区打开', function () {
       dshCall('session/open-main', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
     }))
@@ -4817,6 +5106,116 @@ function sessionRow (record) {
   row.appendChild(actions)
   row.appendChild(chatBlock(record))
   return row
+}
+
+// ------------------------------------------------- 会话标签（右侧边栏的会话页）
+// ?view=session&key=<threadKey>&session=<sessionId>
+// This frame is ONE mail thread's DSH conversation, as a page. It is deliberately
+// not a second chat implementation: it calls the same transcript and prompt
+// endpoints the panel's own chat block does, so there is still exactly one
+// history and one place a turn can run.
+var SESSION_VIEW = /(^|[?&])view=session(&|$)/.test(String(location.search || ''))
+var SESSION_KEY = (function () {
+  var m = /[?&]key=([^&]*)/.exec(String(location.search || ''))
+  try { return m ? decodeURIComponent(m[1]) : '' } catch (error) { return '' }
+})()
+
+function sessionViewRecord () {
+  var list = state.sessions.list || []
+  for (var i = 0; i < list.length; i++) if (list[i].key === SESSION_KEY) return list[i]
+  return null
+}
+
+function renderSessionView () {
+  var body = $('sview-body')
+  if (!body) return
+  var record = sessionViewRecord()
+  if (!record) {
+    body.innerHTML = '<div class="hint" id="sview-empty"><h3>还没有挂载</h3>'
+      + '<p>这条邮件线还没有挂到 DSH 会话。回到面板，在邮件阅读栏点「建 DSH 会话」，'
+      + '或打开「会话」窗口对这条线点「完成挂载」。</p></div>'
+    if ($('sview-title')) $('sview-title').textContent = '邮件会话'
+    if ($('sview-dir')) $('sview-dir').textContent = ''
+    return
+  }
+  if ($('sview-title')) $('sview-title').textContent = record.subject || '(无主题)'
+  if ($('sview-dir')) {
+    $('sview-dir').textContent = record.dir || ''
+    $('sview-dir').title = record.dir || ''
+  }
+  body.innerHTML = ''
+  body.appendChild(chatBlock(record))
+  // The transcript the chat block wants may not have been read yet; it kicks off
+  // its own load and re-renders, so nothing more is needed here.
+  var chat = chatOf(record.key)
+  if (chat.loaded && chat.running) watchTranscript(record)
+}
+
+if (SESSION_VIEW) {
+  document.documentElement.classList.add('session-view')
+  $('sview').hidden = false
+  if ($('sview-refresh')) {
+    $('sview-refresh').onclick = function () {
+      var record = sessionViewRecord()
+      if (!record) { loadSessions().then(renderSessionView); return }
+      loadSessions().then(function () {
+        var chat = chatOf(record.key)
+        chat.loaded = false
+        return loadTranscript(record)
+      }).then(renderSessionView)
+    }
+  }
+  if ($('sview-main')) {
+    $('sview-main').onclick = function () {
+      var record = sessionViewRecord()
+      if (!record || !record.sessionId) { setError('这条线还没有会话'); return }
+      dshCall('session/open-main', { sessionId: record.sessionId })
+        .catch(function (error) { setError(String((error && error.message) || error)) })
+    }
+  }
+  loadSessions().then(renderSessionView)
+}
+
+// 「打开 DSH 会话」 puts the conversation into DSH's right column.
+//
+// DSH's own right column is a tab host, and the kinds it offers are the sidebar
+// plugin's (editor / git / subagent / sidechat / terminal / browser / diff) —
+// none of them renders an ARBITRARY existing session, and DSH ships no
+// requireable conversation component. So this opens OUR tab, which draws that
+// session's transcript through the same endpoints the panel already uses.
+//
+// The previous implementation called uiWorkspace.openSession, which selects the
+// session in the MAIN column and changed nothing visible in the panel — which is
+// exactly why the button read as dead.
+function openSessionTab (record) {
+  if (!record || !record.sessionId) { setError('这条邮件线还没有 DSH 会话'); return }
+  var query = '?view=session'
+    + '&key=' + encodeURIComponent(record.key || '')
+    + '&session=' + encodeURIComponent(record.sessionId)
+  dshCall('panel/open-tab', {
+    kind: 'session',
+    url: query,
+    title: record.subject || '邮件会话',
+  }, 20000).then(function (info) {
+    reportTabOpen(info, '会话')
+  }).catch(function (error) {
+    setError('打开右侧栏会话失败：' + String((error && error.message) || error))
+  })
+}
+
+// One place that turns the client half's report into something the user can act
+// on. A tab that opened into a COLLAPSED column is a real outcome — the column is
+// DSH's own layout state and this plugin cannot force it — and answering "done"
+// for it is exactly how a working button gets reported as dead.
+function reportTabOpen (info, label) {
+  // -1 = could not tell, 0 = measured and empty. Only the explicit zero is worth
+  // telling the user about; warning on "unknown" would fire on every success.
+  var width = info && typeof info.rightbarWidth === 'number' ? info.rightbarWidth : -1
+  if (width === 0) {
+    setError(label + '已经开在右侧栏，但右侧栏现在是折叠的 —— 点 DSH 右上角的侧栏按钮展开它')
+    return
+  }
+  setNotice(label + '已开在右侧栏')
 }
 
 function renderSessions () {
@@ -4974,8 +5373,8 @@ function openAiTab () {
   // Loud on purpose: the whole point is that the block is NOT at the panel's
   // bottom any more, so a silent failure would look like the AI simply stopped
   // working. On failure the inline pane comes back instead.
-  dshCall('panel/open-ai', {}, 20000).then(function () {
-    setNotice('AI 输出在右侧边栏的 “Thunderbird AI” 标签里')
+  dshCall('panel/open-ai', {}, 20000).then(function (info) {
+    reportTabOpen(info, 'AI 输出')
   }).catch(function (error) {
     state.aiRight = false
     document.documentElement.classList.remove('ai-mirrored')
