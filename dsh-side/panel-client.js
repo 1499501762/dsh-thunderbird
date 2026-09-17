@@ -79,6 +79,8 @@ window.__ModuleLoader__.load({
     var open = false
     var probeTimer = null
     var activeCtx = null
+    // Disposer for our own right-sidebar tab type, registered once on first use.
+    var aiTabDisposer = null
 
     function el (tag, attrs, kids) {
       var node = document.createElement(tag)
@@ -563,31 +565,89 @@ window.__ModuleLoader__.load({
         }
 
         if (msg.type === 'panel/open-ai') {
-          var sidebar = serviceOf(ctx, 'betterSidebar')
+          var facts = []
+          var sidebar = serviceOf(activeCtx, 'betterSidebar')
           if (sidebar === undefined) {
-            replyTo(event.source, msg.id, { ok: false, error: 'ctx.get("betterSidebar") 返回 undefined' })
-            return
-          }
-          // Report what the registry actually says, not just success/failure: a
-          // tab type that exists but is DISABLED, and a service whose builtin ids
-          // differ from the assumption, look identical from the panel side.
-          var facts = 'version=' + String(sidebar.version || '?')
-            + ' features=' + String((sidebar.features || []).join('|') || '-')
-            + ' hasBrowserTab=' + (typeof sidebar.getTab === 'function' && sidebar.getTab('browser') !== undefined)
-            + ' browserEnabled=' + (typeof sidebar.isTabEnabled === 'function' ? sidebar.isTabEnabled('browser') : '?')
-          try {
-            sidebar.openTab({
-              type: 'browser',
-              url: location.origin + UI_URL + '?view=ai',
-              title: 'Thunderbird AI',
-            })
-            replyTo(event.source, msg.id, { ok: true, result: facts })
-          } catch (error) {
             replyTo(event.source, msg.id, {
               ok: false,
-              error: facts + ' / openTab threw: ' + String((error && error.message) || error),
+              error: 'ctx.get("betterSidebar") 返回 undefined —— 服务没注册到我这个 ctx 上',
             })
+            return
           }
+          facts.push('version=' + String(sidebar.version || '?'))
+          facts.push('features=' + String((sidebar.features || []).join('|') || '-'))
+
+          // Registering our OWN tab type, not the built-in browser one: the
+          // browser builtin renders a sandbox WITHOUT allow-same-origin (it needs
+          // a loopback whitelist too), so inside it the panel would be a different
+          // origin — theme mirroring and the postMessage bridge would both die.
+          var AI_TAB = 'dsh-thunderbird:ai'
+          var AI_URL = location.origin + UI_URL + '?view=ai'
+          var react = null
+          try { react = require('react') } catch (error) { react = null }
+          facts.push('react=' + (react && typeof react.createElement === 'function' ? 'yes' : 'no'))
+          facts.push('getSnapshot=' + (typeof sidebar.getSnapshot === 'function'))
+          facts.push('registerTab=' + (typeof sidebar.registerTab === 'function'))
+
+          if (aiTabDisposer === null && react && typeof react.createElement === 'function' && typeof sidebar.registerTab === 'function') {
+            try {
+              aiTabDisposer = sidebar.registerTab({
+                id: AI_TAB,
+                title: 'Thunderbird AI',
+                description: '当前邮件线的 AI 输出与会话',
+                order: 60,
+                single: true,
+                component: function (props) {
+                  var meta = (props && props.tab && props.tab.meta) || {}
+                  var url = meta.url || (props && props.tab && props.tab.path) || AI_URL
+                  return react.createElement('iframe', {
+                    src: url,
+                    title: 'Thunderbird AI',
+                    style: { flex: '1 1 auto', width: '100%', height: '100%', border: 0, background: 'transparent' },
+                  })
+                },
+              })
+              facts.push('registered=yes')
+            } catch (error) {
+              facts.push('registerTab threw: ' + String((error && error.message) || error))
+            }
+          } else if (aiTabDisposer !== null) {
+            facts.push('registered=already')
+          }
+
+          if (aiTabDisposer === null) {
+            // No React, so our own tab type cannot exist. Fall back to the builtin
+            // browser tab and SAY SO, because it will look wrong (opaque origin).
+            try {
+              sidebar.openTab({ type: 'browser', url: AI_URL, title: 'Thunderbird AI' })
+              replyTo(event.source, msg.id, { ok: false, error: '只能退回内置 browser 标签（跨源，面板会失去主题和会话桥）：' + facts.join(' ') })
+            } catch (error) {
+              replyTo(event.source, msg.id, { ok: false, error: facts.join(' ') + ' / openTab threw: ' + String((error && error.message) || error) })
+            }
+            return
+          }
+
+          try {
+            sidebar.openTab({ type: AI_TAB, url: AI_URL, title: 'Thunderbird AI' })
+          } catch (error) {
+            replyTo(event.source, msg.id, { ok: false, error: facts.join(' ') + ' / openTab threw: ' + String((error && error.message) || error) })
+            return
+          }
+
+          // openTab returns silently for an unknown or disabled type, so verify
+          // against the snapshot instead of believing the call.
+          var openCount = -1
+          try {
+            var snap = sidebar.getSnapshot()
+            var tabs = snap && snap.state && Array.isArray(snap.state.tabs) ? snap.state.tabs : null
+            openCount = tabs === null ? -1 : tabs.filter(function (tab) {
+              return tab && (tab.type === AI_TAB || String(tab.id || '').indexOf(AI_TAB) === 0)
+            }).length
+          } catch (error) { openCount = -2 }
+          facts.push('openTabs=' + openCount)
+          replyTo(event.source, msg.id, openCount > 0
+            ? { ok: true, result: facts.join(' ') }
+            : { ok: false, error: 'openTab 没有落到这个类型上（多半被设置里禁用了）：' + facts.join(' ') })
           return
         }
 
