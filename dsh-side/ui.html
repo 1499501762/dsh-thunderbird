@@ -1625,7 +1625,13 @@ function renderPinned (host) {
     icon.className = 'folder-icon'
     icon.textContent = folderIcon(folder)
     var label = document.createElement('span')
-    label.textContent = folder.name
+    // NOTE: two accounts can hold folders with the SAME name (Thunderbird
+    // disambiguates the path with a `&doSQrk72-` suffix, not the name), so this
+    // block can show two identically-labelled rows. Appending the account was
+    // tried and does not fit the 218px column — both rows ellipsised to the same
+    // "PeterHan的邮件 · pe…", which is worse than the plain name. The full path is
+    // in the row's tooltip; the column is also resizable.
+    label.textContent = folderLabel(folder)
     var unpin = document.createElement('span')
     unpin.className = 'pin on'
     unpin.textContent = '★'
@@ -1646,20 +1652,13 @@ function renderPinned (host) {
   }
 }
 
-;(function () {
-  var style = document.createElement('style')
-  style.textContent = '.folder .pin{margin-left:auto;padding-left:6px;opacity:0;cursor:pointer;font-size:11px;color:var(--tb-text-dim)}'
-    + '.folder:hover .pin{opacity:.75}.folder .pin:hover{opacity:1;color:var(--tb-accent)}'
-    + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
-    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent)}'
-  document.head.appendChild(style)
-})()
-
 state.pinned = loadPinned()
 
 // The pin star FLOATS over the row's left edge instead of sitting in it: as a
 // flex child it stole width from the ellipsised folder name and re-laid-out every
 // row. Absolutely positioned, it affects nothing.
+// (An earlier block with the same selectors used to sit above this one; every
+// rule in it was overridden here, so it was removed rather than left to mislead.)
 ;(function () {
   var style = document.createElement('style')
   style.textContent = '.folder{position:relative}'
@@ -1672,11 +1671,12 @@ state.pinned = loadPinned()
     + '.folder:hover .pin{opacity:.85}'
     + '.folder .pin:hover{opacity:1;color:var(--tb-accent)}'
     + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
-    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent)}'
+    // A pinned row is TINTED where the tree rows are not, so the base zero margin
+    // let two pinned rows merge into one blob with no seam.
+    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent);margin-bottom:4px}'
+    + '.folder.pinned:last-child{margin-bottom:0}'
   document.head.appendChild(style)
 })()
-
-state.pinned = loadPinned()
 
 function folderPin (folder, inCopy) {
   var pinned = !!(state.pinned && state.pinned[folder.id])
