@@ -546,8 +546,21 @@
   html.ai-view #ai-new { display: none !important; }
 
   /* ---------- unread threads, judged by the newest message ---------- */
-  .thread-head.unread { box-shadow: inset 3px 0 0 var(--tb-accent); }
-  .thread-head.unread .thread-subject { color: var(--tb-text); font-weight: 700; }
+  .thread-head.unread {
+    background: color-mix(in srgb, var(--tb-accent) 12%, transparent);
+    box-shadow: inset 3px 0 0 var(--tb-accent);
+  }
+  .thread-head.unread .thread-subject { color: var(--tb-accent); font-weight: 700; }
+  .thread-head.unread .thread-subject::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--tb-accent);
+    vertical-align: middle;
+  }
   .thread-head.unread .thread-count {
     color: var(--tb-accent);
     border-color: color-mix(in srgb, var(--tb-accent) 42%, transparent);
@@ -1485,10 +1498,16 @@ function whiteTile (img, mode) {
   for (var f = 0; f < w * h; f++) {
     if (seen[f] !== 1) continue
     var fi = f * 4
+    // A fully transparent pixel usually carries RGB 0,0,0. Solving it would read
+    // its BLACK luma as opaque artwork and resurrect it as an opaque black pixel
+    // — which is exactly how a transparent background came out black. Anything
+    // already transparent stays transparent.
+    if (px[fi + 3] < 40) { px[fi + 3] = 0; continue }
     unmix(fi, alphaAt(fi))
   }
   for (var e2 = 0; e2 < outline.length; e2++) {
     var ei = outline[e2] * 4
+    if (px[ei + 3] < 40) { px[ei + 3] = 0; continue }
     var ea = alphaAt(ei)
     if (ea < 1) unmix(ei, ea)
   }
@@ -3149,8 +3168,8 @@ function sessionRow (record) {
     actions.appendChild(button('打开会话', function () {
       dshCall('session/open', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
     }))
-    actions.appendChild(button('右侧打开', function () {
-      dshCall('session/open-right', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
+    actions.appendChild(button('主区打开', function () {
+      dshCall('session/open-main', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
     }))
   } else {
     actions.appendChild(button('完成挂载', function () { bindThread({ subject: record.subject, folderId: record.folderId, messages: [] }) }))

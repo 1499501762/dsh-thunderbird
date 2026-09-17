@@ -570,18 +570,20 @@ window.__ModuleLoader__.load({
           return
         }
 
-        if (msg.type === 'session/open' || msg.type === 'session/open-right') {
+        if (msg.type === 'session/open' || msg.type === 'session/open-main') {
           var sessions = serviceOf(ctx, 'sessions')
           var layout = serviceOf(ctx, 'layout')
           try {
             if (sessions === undefined) throw new Error('DSH sessions 服务不可用')
             if (!msg.sessionId) throw new Error('缺少 sessionId')
-            if (msg.type === 'session/open-right' && layout !== undefined) {
-              sessions.open(String(msg.sessionId))
-              layout.openRightbar(true, false)
-              closePanel()
+            sessions.open(String(msg.sessionId))
+            if (msg.type === 'session/open') {
+              // Park it in the right sidebar and KEEP the mail panel open. The
+              // right bar mirrors the ACTIVE session, so activating it is
+              // unavoidable — but also closing our own view made that look like
+              // the panel had thrown the user out into the workspace.
+              if (layout !== undefined) layout.openRightbar(true, false)
             } else {
-              sessions.open(String(msg.sessionId))
               closePanel()
             }
             replyTo(event.source, msg.id, { ok: true, result: true })
