@@ -476,6 +476,51 @@
     -webkit-backdrop-filter: var(--tb-glass-blur-strong);
     border-color: var(--tb-glass-line);
   }
+  /* ---------- right-click menu ----------
+     Three contexts share one element: the editor gets text commands, a mail gets
+     mail commands, and the reader body gets both, in that order. */
+  .ctxmenu {
+    position: fixed;
+    z-index: 130;
+    min-width: 208px;
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 5px;
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 11px;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, .45);
+  }
+  .ctxmenu button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--tb-text);
+    padding: 6px 9px;
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .ctxmenu button:hover { background: var(--tb-hover); }
+  .ctxmenu button[disabled] { opacity: .38; cursor: default; }
+  .ctxmenu button[disabled]:hover { background: transparent; }
+  .ctxmenu .ctxkey { margin-left: auto; font-size: 10.5px; color: var(--tb-text-dim); letter-spacing: .3px; }
+  .ctxmenu .ctxlabel { flex: 1 1 auto; }
+  .ctxmenu .ctxdang { color: #e06c6c; }
+  .ctxmenu .ctxsep { height: 1px; margin: 4px 6px; background: var(--tb-glass-line); flex: none; }
+  .ctxmenu .ctxhead { padding: 4px 9px 5px; font-size: 10.5px; color: var(--tb-text-dim); letter-spacing: .4px; }
+  .ctxmenu .ctxfolder { font-size: 12px; }
   .sess {
     background: var(--tb-glass);
     backdrop-filter: var(--tb-glass-blur);
@@ -860,6 +905,8 @@
     </div>
   </div>
 
+  <div class="ctxmenu" id="ctxmenu" hidden></div>
+
   <div class="selmenu" id="selmenu" hidden>
     <button data-act="ask">问 AI</button>
     <button data-act="summarize">总结</button>
@@ -1041,6 +1088,13 @@ function folderLabel (folder) {
     if (SPECIAL[uses[i]]) return SPECIAL[uses[i]]
   }
   return '(未命名)'
+}
+
+function folderLabelById (folderId) {
+  for (var i = 0; i < (state.folders || []).length; i++) {
+    if (String(state.folders[i].id) === String(folderId)) return folderLabel(state.folders[i])
+  }
+  return ''
 }
 
 function flatten (accounts) {
@@ -1396,6 +1450,7 @@ function renderList () {
     var message = rows[i].message
     var picked = state.checked.indexOf(message.id) >= 0
     var item = document.createElement('div')
+    item.dataset.msgId = message.id
     item.className = 'item' + (message.read ? '' : ' unread')
       + (state.current && state.current.id === message.id ? ' active' : '')
       + (picked ? ' picked' : '')
@@ -2655,6 +2710,560 @@ function onSelMenuClick (event) {
   else if (act === 'translate') runAi('translate', { text: text, title: 'AI 翻译 · 选段' })
   else if (act === 'rewrite') openAsk('rewrite', text, '改写要求（如：更简洁、更正式）', 'AI 改写 · 选段')
 }
+
+// ------------------------------------------------------------------ 右键菜单
+// One element, three item sets. The editor gives text commands, a mail gives mail
+// commands, and the reader body gets both — text first, because that is what the
+// cursor is sitting in. Every item is a plain button, so the whole menu is
+// keyboard-reachable through Tab without a second implementation.
+var ctxState = { target: null, messageId: null, folder: null, kind: '' }
+
+function ctxButton (label, hint, run, opts) {
+  var options = opts || {}
+  var button = document.createElement('button')
+  button.type = 'button'
+  button.setAttribute('data-ctx', options.act || '')
+  if (options.danger) button.className = 'ctxdang'
+  if (options.disabled) button.disabled = true
+  var text = document.createElement('span')
+  text.className = 'ctxlabel'
+  text.textContent = label
+  button.appendChild(text)
+  if (hint) {
+    var key = document.createElement('span')
+    key.className = 'ctxkey'
+    key.textContent = hint
+    button.appendChild(key)
+  }
+  if (run) button.setAttribute('data-run', '1')
+  button.__run = run || null
+  return button
+}
+
+function ctxSeparator () {
+  var sep = document.createElement('div')
+  sep.className = 'ctxsep'
+  return sep
+}
+
+function ctxHeading (text) {
+  var head = document.createElement('div')
+  head.className = 'ctxhead'
+  head.textContent = text
+  return head
+}
+
+// --- text commands, shared by the composer, the signature editor and the reader
+function ctxEditable () {
+  var node = ctxState.target
+  while (node && node.nodeType === 1) {
+    if (node.isContentEditable) return node
+    node = node.parentNode
+  }
+  return null
+}
+
+function ctxSelectionRange (root) {
+  var sel = window.getSelection ? window.getSelection() : null
+  if (!sel || sel.rangeCount === 0) return null
+  var range = sel.getRangeAt(0)
+  if (root && !root.contains(range.commonAncestorContainer)) return null
+  return range
+}
+
+function ctxExec (command, value, editable) {
+  var node = editable || ctxEditable()
+  if (node) node.focus()
+  try {
+    document.execCommand('styleWithCSS', false, true)
+    document.execCommand(command, false, value === undefined ? null : value)
+  } catch (error) {
+    setError('这个操作在当前环境不可用')
+  }
+}
+
+function ctxInsertHtml (html) {
+  var node = ctxEditable()
+  if (node) node.focus()
+  try {
+    document.execCommand('insertHTML', false, html)
+  } catch (error) {
+    ctxExec('insertText', String(html).replace(/<[^>]*>/g, ''))
+  }
+}
+
+function ctxCopy () {
+  if (document.execCommand('copy')) { setNotice('已复制'); return }
+  setError('复制失败，请用 Ctrl+C')
+}
+
+function ctxCut () {
+  if (document.execCommand('cut')) { setNotice('已剪切'); return }
+  setError('剪切失败，请用 Ctrl+X')
+}
+
+// execCommand('paste') has been refused by every browser for years, so a real
+// paste has to go through the async clipboard. When the permission is not granted
+// the honest answer is to say so and name the shortcut, not to insert nothing.
+function ctxClipboardRead (asHtml) {
+  var clip = navigator.clipboard
+  if (!clip) { setError('浏览器不允许面板读取剪贴板，请用 Ctrl+V'); return Promise.reject(new Error('no clipboard')) }
+  if (!asHtml && clip.readText) return clip.readText()
+  if (clip.read) {
+    return clip.read().then(function (items) {
+      var types = {}
+      var jobs = []
+      for (var i = 0; i < items.length; i++) {
+        var entry = items[i]
+        for (var j = 0; j < entry.types.length; j++) {
+          var type = entry.types[j]
+          jobs.push(entry.getType(type).then((function (t) {
+            return function (blob) {
+              return blob.text().then(function (text) { types[t] = text })
+            }
+          })(type)))
+        }
+      }
+      return Promise.all(jobs).then(function () { return types })
+    })
+  }
+  return clip.readText ? clip.readText() : Promise.reject(new Error('no clipboard read'))
+}
+
+function ctxPaste (plain) {
+  ctxClipboardRead(!plain).then(function (data) {
+    var node = ctxEditable()
+    if (node) node.focus()
+    if (plain) {
+      var text = typeof data === 'string' ? data : String((data && data['text/plain']) || '')
+      if (!text) return
+      try { document.execCommand('insertText', false, text) } catch (error) { ctxInsertHtml(escapeHtml(text).replace(/\n/g, '<br>')) }
+      return
+    }
+    var html = typeof data === 'string' ? '' : String((data && data['text/html']) || '')
+    var text = typeof data === 'string' ? data : String((data && data['text/plain']) || '')
+    if (html) ctxInsertHtml(sanitize(html))
+    else if (text) ctxInsertHtml(escapeHtml(text).replace(/\n/g, '<br>'))
+  }).catch(function () {
+    setError('读取剪贴板被拒绝，请用 Ctrl+V（Ctrl+Shift+V 为纯文本）')
+  })
+}
+
+function ctxSelectAll () {
+  var node = ctxEditable()
+  if (node) { node.focus(); ctxExec('selectAll'); return }
+  var content = document.querySelector('#reader .content')
+  if (!content) return
+  var range = document.createRange()
+  range.selectNodeContents(content)
+  var sel = window.getSelection()
+  sel.removeAllRanges()
+  sel.addRange(range)
+}
+
+function ctxCopyText (text, what) {
+  var value = String(text || '')
+  if (!value) { setError('没有可复制的' + (what || '内容')); return }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(function () { setNotice('已复制' + (what || '')) })
+      .catch(function () { ctxExec('insertText', value) })
+    return
+  }
+  ctxExec('insertText', value)
+  setNotice('已复制' + (what || ''))
+}
+
+function ctxInsertDateTime () {
+  var now = new Date()
+  var pad = function (n) { return (n < 10 ? '0' : '') + n }
+  ctxInsertHtml(pad(now.getFullYear()) + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+    + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()))
+}
+
+// --- mail commands
+// Ids arrive as numbers from the bridge and as strings from a dataset attribute,
+// so every comparison goes through String(): a strict === silently matched
+// nothing and built an empty menu.
+function sameMessageId (a, b) {
+  return a !== null && a !== undefined && b !== null && b !== undefined && String(a) === String(b)
+}
+
+function ctxMessage () {
+  if (!ctxState.messageId) return null
+  if (state.current && sameMessageId(state.current.id, ctxState.messageId)) return state.current
+  for (var i = 0; i < state.messages.length; i++) {
+    if (sameMessageId(state.messages[i].id, ctxState.messageId)) return state.messages[i]
+  }
+  return null
+}
+
+function ctxReply (all) {
+  var message = ctxMessage()
+  if (!message) { setError('先选中一封邮件'); return }
+  if (!all) { startCompose(message); return }
+  startCompose(message)
+  // Reply-all is reply plus everyone else who was already on the thread, minus
+  // this account's own addresses — writing to yourself is the classic mistake.
+  var mine = {}
+  var ids = identityList()
+  for (var i = 0; i < ids.length; i++) mine[String(ids[i].email || '').toLowerCase()] = true
+  var seen = {}
+  var extras = []
+  var pools = [message.recipients || [], message.ccList || []]
+  for (var p = 0; p < pools.length; p++) {
+    for (var j = 0; j < pools[p].length; j++) {
+      var address = emailOf(pools[p][j])
+      var key = address.toLowerCase()
+      if (!address || seen[key] || mine[key]) continue
+      seen[key] = true
+      extras.push(address)
+    }
+  }
+  $('c-cc').value = extras.join(', ')
+  syncComposeOptional()
+}
+
+function ctxForward () {
+  var message = ctxMessage()
+  if (!message) { setError('先选中一封邮件'); return }
+  var subject = String(message.subject || '')
+  startCompose(null)
+  $('c-subject').value = /^fwd:/i.test(subject) ? subject : ('Fwd: ' + subject)
+  var header = '<div>---------- 转发的邮件 ----------</div>'
+    + '<div>发件人：' + escapeHtml(message.author || '') + '</div>'
+    + '<div>时间：' + escapeHtml(fmtFull(message.date)) + '</div>'
+    + '<div>主题：' + escapeHtml(subject) + '</div>'
+  var quoted = ctxMailHtml(message)
+  $('c-body').innerHTML = header + '<blockquote>' + (quoted || '') + '</blockquote>'
+  syncComposeOptional()
+  setNotice('已转入撰写区，请填写收件人')
+}
+
+// The body of a message as HTML, whether it came back as HTML or as plain text.
+function ctxMailHtml (message) {
+  var body = state.current && state.current.id === message.id ? state.body : null
+  if (body && body.html) return sanitize(body.html)
+  if (body && body.text) return escapeHtml(body.text).replace(/\n/g, '<br>')
+  return ''
+}
+
+function ctxSetRead (read) {
+  var message = ctxMessage()
+  if (!message) return
+  call('messages.update', { messageId: message.id, read: read }).then(function () {
+    message.read = read
+    state.messages.forEach(function (m) { if (m.id === message.id) m.read = read })
+    if (state.current && state.current.id === message.id) state.current.read = read
+    render()
+    setNotice(read ? '已标为已读' : '已标为未读')
+  }).catch(function (error) { setError(error.message) })
+}
+
+function ctxSetFlag (flagged) {
+  var message = ctxMessage()
+  if (!message) return
+  call('messages.update', { messageId: message.id, flagged: flagged }).then(function () {
+    message.flagged = flagged
+    state.messages.forEach(function (m) { if (m.id === message.id) m.flagged = flagged })
+    if (state.current && state.current.id === message.id) state.current.flagged = flagged
+    render()
+    setNotice(flagged ? '已加星标' : '已取消星标')
+  }).catch(function (error) { setError(error.message) })
+}
+
+function ctxDelete () {
+  var message = ctxMessage()
+  if (!message) return
+  call('messages.delete', { messageIds: [message.id] }).then(function () {
+    state.messages = state.messages.filter(function (m) { return m.id !== message.id })
+    if (state.current && state.current.id === message.id) { state.current = null; state.body = null }
+    setNotice('已删除')
+    render()
+  }).catch(function (error) { setError(error.message) })
+}
+
+function ctxMove (folderId) {
+  var message = ctxMessage()
+  if (!message || !folderId) return
+  call('messages.move', { messageIds: [message.id], destination: folderId }).then(function () {
+    state.messages = state.messages.filter(function (m) { return m.id !== message.id })
+    if (state.current && state.current.id === message.id) { state.current = null; state.body = null }
+    if (state.folderId === folderId) loadMessages()
+    setNotice('已移动到 ' + (folderLabelById(folderId) || folderId))
+    render()
+  }).catch(function (error) { setError(error.message) })
+}
+
+// --- export and print
+// The panel already holds the headers and the body it rendered, so this writes a
+// real multipart .eml from those parts rather than pretending to hand back the
+// server's original bytes. It opens in any mail client, and the alternative —
+// a byte-exact copy — needs a raw fetch the extension does not expose yet.
+function ctxEmlText (message) {
+  var body = state.current && state.current.id === message.id ? state.body : null
+  var html = (body && body.html) ? sanitize(body.html) : ''
+  if (!html && body && body.text) html = '<pre style="white-space:pre-wrap">' + escapeHtml(body.text) + '</pre>'
+  if (!html) html = '<p></p>'
+  var boundary = 'dsh-tb-' + Date.now().toString(36)
+  var head = [
+    'From: ' + String(message.author || ''),
+    'To: ' + (message.recipients || []).join(', '),
+  ]
+  if (message.ccList && message.ccList.length) head.push('Cc: ' + message.ccList.join(', '))
+  head.push('Subject: ' + String(message.subject || ''))
+  head.push('Date: ' + new Date(message.date || Date.now()).toUTCString())
+  head.push('MIME-Version: 1.0')
+  head.push('Content-Type: multipart/alternative; boundary="' + boundary + '"')
+  var text = stripHtml(html)
+  return head.join('\r\n') + '\r\n\r\n'
+    + '--' + boundary + '\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n' + text + '\r\n\r\n'
+    + '--' + boundary + '\r\nContent-Type: text/html; charset=utf-8\r\n\r\n' + html + '\r\n\r\n'
+    + '--' + boundary + '--\r\n'
+}
+
+function ctxSaveEml () {
+  var message = ctxMessage()
+  if (!message) return
+  var name = String(message.subject || 'mail').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 60) || 'mail'
+  var blob = new Blob([ctxEmlText(message)], { type: 'message/rfc822' })
+  var url = URL.createObjectURL(blob)
+  var link = document.createElement('a')
+  link.href = url
+  link.download = name + '.eml'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(function () { URL.revokeObjectURL(url) }, 20000)
+  setNotice('已导出 ' + name + '.eml')
+}
+
+// Printing goes through a separate document so the panel's own chrome and the
+// dark theme never reach the paper.
+function ctxPrintHtml (message) {
+  var html = (state.current && sameMessageId(state.current.id, message.id))
+    ? ctxMailHtml(message)
+    : '<p>' + escapeHtml(String(message.subject || '')) + '</p>'
+  return '<!doctype html><html><head><meta charset="utf-8"><title>' + escapeHtml(String(message.subject || '邮件')) + '</title>'
+    + '<style>body{font:13px/1.7 -apple-system,Segoe UI,sans-serif;color:#111;margin:24px}'
+    + 'blockquote{border-left:2px solid #bbb;margin:0;padding-left:10px;color:#444}img{max-width:100%}</style></head><body>'
+    + '<h2 style="margin:0 0 6px;font-size:16px">' + escapeHtml(String(message.subject || '')) + '</h2>'
+    + '<div style="color:#555;font-size:12px;margin-bottom:14px">' + escapeHtml(String(message.author || ''))
+    + ' · ' + escapeHtml(fmtFull(message.date)) + '</div>'
+    + '<hr style="border:0;border-top:1px solid #ddd">'
+    + sanitize(html) + '</body></html>'
+}
+
+function ctxPrint () {
+  var message = ctxMessage()
+  if (!message) return
+  var frame = document.createElement('iframe')
+  frame.setAttribute('aria-hidden', 'true')
+  frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0'
+  document.body.appendChild(frame)
+  var doc = frame.contentWindow.document
+  doc.open()
+  doc.write(ctxPrintHtml(message))
+  doc.close()
+  try {
+    frame.contentWindow.focus()
+    frame.contentWindow.print()
+  } catch (error) {
+    setError('打印窗口被拦截，请在浏览器里允许这个面板弹出窗口')
+  }
+  window.setTimeout(function () { frame.remove() }, 60000)
+}
+
+// --- menu assembly
+var CTX_TEXT_ITEMS = [
+  ['剪切', 'Ctrl+X', function () { ctxCut() }],
+  ['复制', 'Ctrl+C', function () { ctxCopy() }],
+  ['粘贴', 'Ctrl+V', function () { ctxPaste(false) }],
+  ['__sep'],
+  ['粘贴为纯文本', 'Ctrl+Shift+V', function () { ctxPaste(true) }],
+  ['全选', 'Ctrl+A', function () { ctxSelectAll() }],
+  ['__sep'],
+  ['撤销', 'Ctrl+Z', function () { ctxExec('undo') }],
+  ['重做', 'Ctrl+Shift+Z', function () { ctxExec('redo') }],
+  ['__sep'],
+  ['清除格式', '', function () { ctxExec('removeFormat') }],
+  ['插入分割线', '', function () { ctxInsertHtml('<hr>') }],
+  ['插入日期时间', '', function () { ctxInsertDateTime() }]
+]
+
+function ctxMailItems () {
+  var message = ctxMessage()
+  if (!message) return []
+  var items = [
+    ['回复', 'R', function () { ctxReply(false) }],
+    ['回复全部', '', function () { ctxReply(true) }],
+    ['转发', '', function () { ctxForward() }],
+    ['__sep'],
+    [message.read ? '标为未读' : '标为已读', 'U', function () { ctxSetRead(!message.read) }],
+    [message.flagged ? '取消星标' : '加星标', 'S', function () { ctxSetFlag(!message.flagged) }],
+    ['__sep'],
+    ['复制主题', '', function () { ctxCopyText(message.subject, '主题') }],
+    ['复制发件人地址', '', function () { ctxCopyText(emailOf(message.author), '发件人地址') }],
+    ['导出为 .eml', '', function () { ctxSaveEml() }],
+    ['打印', 'Ctrl+P', function () { ctxPrint() }],
+    ['__sep'],
+    ['移动到…', '', function () { ctxShowFolderPicker() }],
+    ['__sep'],
+    ['删除', 'Del', function () { ctxDelete() }, { danger: true }]
+  ]
+  return items
+}
+
+function ctxBuild (items) {
+  var menu = $('ctxmenu')
+  menu.innerHTML = ''
+  for (var i = 0; i < items.length; i++) {
+    var entry = items[i]
+    // A separator is a bare string; everything else is an array. Anything that is
+    // neither is dropped rather than turned into a button whose label is its own
+    // first character.
+    if (entry === '__sep') { menu.appendChild(ctxSeparator()); continue }
+    if (!Array.isArray(entry)) continue
+    if (entry[0] === '__sep') { menu.appendChild(ctxSeparator()); continue }
+    if (entry[0] === '__head') { menu.appendChild(ctxHeading(entry[1])); continue }
+    menu.appendChild(ctxButton(entry[0], entry[1], entry[2], entry[3]))
+  }
+}
+
+// The folder list replaces the menu in place. A hover submenu is a second thing
+// to position, and a mail client's folder tree is long enough that it would
+// routinely fall off the bottom of the window.
+function ctxShowFolderPicker () {
+  var message = ctxMessage()
+  if (!message) return
+  var menu = $('ctxmenu')
+  menu.innerHTML = ''
+  menu.appendChild(ctxHeading('移动到'))
+  var back = ctxButton('返回', '', function () { ctxBuild(ctxMailItems()) })
+  menu.appendChild(back)
+  menu.appendChild(ctxSeparator())
+  var current = message.folderId
+  var count = 0
+  for (var i = 0; i < state.folders.length; i++) {
+    var folder = state.folders[i]
+    if (sameMessageId(folder.id, current)) continue
+    count++
+    var label = (folder.depth ? new Array(folder.depth + 1).join('　') : '') + folderLabel(folder)
+    var button = ctxButton(label, '', (function (id) {
+      return function () { hideContextMenu(); ctxMove(id) }
+    })(folder.id), { act: 'move' })
+    button.classList.add('ctxfolder')
+    // Redraws are keyed off the item order, so the folder id must not be baked
+    // into the label — it lives on the element instead.
+    button.dataset.folder = folder.id
+    menu.appendChild(button)
+  }
+  if (!count) menu.appendChild(ctxHeading('没有别的文件夹'))
+  ctxPlace(menu, ctxState.x, ctxState.y)
+}
+
+function ctxPlace (menu, x, y) {
+  menu.hidden = false
+  menu.style.left = '0px'
+  menu.style.top = '0px'
+  var width = menu.offsetWidth
+  var height = menu.offsetHeight
+  var left = Math.max(6, Math.min(x, window.innerWidth - width - 8))
+  var top = Math.max(6, Math.min(y, window.innerHeight - height - 8))
+  menu.style.left = left + 'px'
+  menu.style.top = top + 'px'
+}
+
+function hideContextMenu () {
+  var menu = $('ctxmenu')
+  if (menu) menu.hidden = true
+}
+
+function showContextMenu (event, kind, messageId, target) {
+  ctxState.kind = kind
+  ctxState.messageId = messageId || null
+  ctxState.target = target || null
+  ctxState.x = event.clientX
+  ctxState.y = event.clientY
+  var items = []
+  if (kind === 'editor') {
+    items = CTX_TEXT_ITEMS
+  } else if (kind === 'reader') {
+    // The reader is both: text commands act on the selection under the cursor,
+    // mail commands on the message the reader is showing. One array entry per
+    // item — ['__head', subject] is a pair, not two entries.
+    var message = ctxMessage()
+    items = [['__head', message ? String(message.subject || '这封邮件') : '这封邮件']]
+      .concat(CTX_TEXT_ITEMS, ['__sep'], ctxMailItems())
+  } else {
+    items = ctxMailItems()
+  }
+  ctxBuild(items)
+  ctxPlace($('ctxmenu'), event.clientX, event.clientY)
+}
+
+function ctxMessageIdFrom (node) {
+  while (node && node.nodeType === 1) {
+    if (node.dataset && node.dataset.msgId) return node.dataset.msgId
+    node = node.parentNode
+  }
+  return null
+}
+
+document.addEventListener('contextmenu', function (event) {
+  var target = event.target
+  if (!target || !target.closest) return
+  // The panel's own chrome keeps the browser menu: it is where "inspect" and
+  // "copy" on a chip still belong.
+  if (!target.closest('.compose, #reader, #list, #signatures')) return
+  var editable = null
+  var node = target
+  while (node && node.nodeType === 1) {
+    if (node.isContentEditable) { editable = node; break }
+    node = node.parentNode
+  }
+  // Any editor, not just the composer body: the signature editor is a
+  // contenteditable too, and it wants the same text commands.
+  if (editable) {
+    event.preventDefault()
+    showContextMenu(event, 'editor', null, editable)
+    return
+  }
+  var reader = target.closest('#reader')
+  if (reader) {
+    event.preventDefault()
+    showContextMenu(event, 'reader', state.current ? state.current.id : null, target)
+    return
+  }
+  var id = ctxMessageIdFrom(target)
+  if (id) {
+    event.preventDefault()
+    showContextMenu(event, 'list', id, target)
+    return
+  }
+  // Anything else inside the composer (a header field, the toolbar): the browser
+  // menu is more useful than a menu of commands that cannot apply to it.
+})
+
+$('ctxmenu').addEventListener('click', function (event) {
+  var button = event.target && event.target.closest ? event.target.closest('button') : null
+  if (!button || button.disabled) return
+  var run = button.__run
+  if (run) { hideContextMenu(); run() }
+})
+$('ctxmenu').addEventListener('contextmenu', function (event) { event.preventDefault() })
+document.addEventListener('mousedown', function (event) {
+  var menu = $('ctxmenu')
+  if (menu.hidden) return
+  if (menu.contains(event.target)) return
+  hideContextMenu()
+})
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape') hideContextMenu()
+})
+window.addEventListener('blur', hideContextMenu)
+window.addEventListener('resize', hideContextMenu)
+$('reader').addEventListener('scroll', hideContextMenu)
+$('list').addEventListener('scroll', hideContextMenu)
 
 function pollStatus () {
   return fetch('/api/thunderbird/status', { cache: 'no-store' }).then(function (res) { return res.json() }).then(function (data) {
