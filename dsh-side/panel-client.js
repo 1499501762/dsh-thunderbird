@@ -572,20 +572,24 @@ window.__ModuleLoader__.load({
 
         if (msg.type === 'session/open' || msg.type === 'session/open-main') {
           var sessions = serviceOf(ctx, 'sessions')
-          var layout = serviceOf(ctx, 'layout')
+          var workspace = serviceOf(ctx, 'uiWorkspace')
           try {
-            if (sessions === undefined) throw new Error('DSH sessions 服务不可用')
             if (!msg.sessionId) throw new Error('缺少 sessionId')
-            sessions.open(String(msg.sessionId))
-            if (msg.type === 'session/open') {
-              // Park it in the right sidebar and KEEP the mail panel open. The
-              // right bar mirrors the ACTIVE session, so activating it is
-              // unavoidable — but also closing our own view made that look like
-              // the panel had thrown the user out into the workspace.
-              if (layout !== undefined) layout.openRightbar(true, false)
+            // uiWorkspace.openSession is the domain op the workspace UI itself
+            // uses to actually OPEN a session. sessions.open only selects it in
+            // the sidebar, which is why the first click looked half-done.
+            if (workspace !== undefined && typeof workspace.openSession === 'function') {
+              workspace.openSession(String(msg.sessionId))
+            } else if (sessions !== undefined) {
+              sessions.open(String(msg.sessionId))
             } else {
-              closePanel()
+              throw new Error('DSH 会话服务不可用')
             }
+            // Deliberately NOT calling layout.openRightbar: the right bar mirrors
+            // the active session, but opening it without selecting one of its own
+            // tabs renders an EMPTY column — which is the blank panel the second
+            // click produced.
+            if (msg.type === 'session/open-main') closePanel()
             replyTo(event.source, msg.id, { ok: true, result: true })
           } catch (error) {
             replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })

@@ -405,23 +405,28 @@ methods['mail.open'] = async (params) => {
   if (!api.messageDisplay || !api.messageDisplay.open) {
     throw new Error('this Thunderbird build has no messageDisplay.open')
   }
-  const tab = await api.messageDisplay.open({ messageId: toMessageId(params.messageId), location: 'tab' })
-  // Opening a tab is not enough: the user is looking at DSH, so raise Thunderbird.
-  let focused = false
+  const opened = await api.messageDisplay.open({ messageId: toMessageId(params.messageId) })
+  // Raising Thunderbird is the ADD-ON's job: the caller is another application,
+  // and `focused: true` alone routinely leaves the window behind it on Windows.
+  // Restore first (a minimized window cannot take focus), then focus AND ask for
+  // attention, which is what actually pulls it to the front.
   try {
-    if (api.windows && api.windows.update) {
-      let windowId = tab && tab.windowId !== undefined ? tab.windowId : undefined
-      if (windowId === undefined && api.windows.getCurrent) {
-        const current = await api.windows.getCurrent()
-        if (current) windowId = current.id
-      }
-      if (windowId !== undefined) {
-        await api.windows.update(windowId, { focused: true })
-        focused = true
+    const windows = api.windows && api.windows.getAll
+      ? await api.windows.getAll({ windowTypes: ['normal'] })
+      : []
+    for (let i = 0; i < windows.length; i++) {
+      if (windows[i].state === 'minimized') {
+        try { await api.windows.update(windows[i].id, { state: 'normal' }) } catch (e) { /* optional */ }
       }
     }
-  } catch (error) { /* focus is best effort */ }
-  return { opened: true, focused }
+    const target = opened && opened.windowId !== undefined
+      ? opened.windowId
+      : (windows.length ? windows[0].id : undefined)
+    if (target !== undefined) {
+      await api.windows.update(target, { focused: true, drawAttention: true })
+    }
+  } catch (error) { /* focus is best-effort; the message is already open */ }
+  return { opened: true, messageId: toMessageId(params.messageId) }
 }
 
 // Search is server-side, so it is NOT limited by how much of the list the panel

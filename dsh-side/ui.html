@@ -971,9 +971,74 @@ function renderChips () {
   }
 }
 
+// A pinned folder is a COPY parked at the top, not a reordered original: the row
+// keeps its place in the tree, so collapsing an account cannot hide it and no
+// folder ever moves under the user's cursor.
+var PIN_KEY = 'dsh-tb-pinned'
+
+function loadPinned () {
+  try { return JSON.parse(localStorage.getItem(PIN_KEY) || '{}') || {} } catch (error) { return {} }
+}
+function savePinned () {
+  try { localStorage.setItem(PIN_KEY, JSON.stringify(state.pinned || {})) } catch (error) { /* no storage */ }
+}
+
+function renderPinned (host) {
+  var wanted = []
+  var byId = {}
+  for (var i = 0; i < state.folders.length; i++) byId[state.folders[i].id] = state.folders[i]
+  var keys = Object.keys(state.pinned || {})
+  for (var k = 0; k < keys.length; k++) if (state.pinned[keys[k]] && byId[keys[k]]) wanted.push(byId[keys[k]])
+  if (!wanted.length) return
+  var group = document.createElement('div')
+  group.className = 'group'
+  group.textContent = '置顶'
+  host.appendChild(group)
+  for (var w = 0; w < wanted.length; w++) {
+    var folder = wanted[w]
+    var row = document.createElement('div')
+    row.className = 'folder pinned' + (folder.id === state.folderId ? ' active' : '')
+    row.title = (folder.path || folder.name) + '（置顶副本）'
+    var icon = document.createElement('span')
+    icon.className = 'folder-icon'
+    icon.textContent = folderIcon(folder)
+    var label = document.createElement('span')
+    label.textContent = folder.name
+    var unpin = document.createElement('span')
+    unpin.className = 'pin on'
+    unpin.textContent = '★'
+    unpin.title = '取消置顶'
+    unpin.onclick = (function (id) {
+      return function (event) {
+        event.stopPropagation()
+        state.pinned[id] = false
+        savePinned()
+        renderFolders()
+      }
+    })(folder.id)
+    row.appendChild(icon)
+    row.appendChild(label)
+    row.appendChild(unpin)
+    row.onclick = (function (id) { return function () { selectFolder(id) } })(folder.id)
+    host.appendChild(row)
+  }
+}
+
+;(function () {
+  var style = document.createElement('style')
+  style.textContent = '.folder .pin{margin-left:auto;padding-left:6px;opacity:0;cursor:pointer;font-size:11px;color:var(--tb-text-dim)}'
+    + '.folder:hover .pin{opacity:.75}.folder .pin:hover{opacity:1;color:var(--tb-accent)}'
+    + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
+    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent)}'
+  document.head.appendChild(style)
+})()
+
+state.pinned = loadPinned()
+
 function renderFolders () {
   var host = $('folders')
   host.innerHTML = ''
+  renderPinned(host)
   state.collapsed = state.collapsed || {}
   var last = null
   var skipDepth = -1
@@ -999,6 +1064,23 @@ function renderFolders () {
       row.style.setProperty('--guide', (10 + (folder.depth - 1) * 16 + 7) + 'px')
     }
     row.title = folder.path || folder.name
+    // Pin toggle. margin-left:auto in CSS parks it at the right edge even though
+    // the row's other children are appended after this point.
+    var pin = document.createElement('span')
+    var isPinned = !!(state.pinned && state.pinned[folder.id])
+    pin.className = 'pin' + (isPinned ? ' on' : '')
+    pin.textContent = isPinned ? '★' : '☆'
+    pin.title = isPinned ? '取消置顶' : '置顶到顶部（只加一个副本入口）'
+    pin.onclick = (function (id) {
+      return function (event) {
+        event.stopPropagation()
+        state.pinned = state.pinned || {}
+        state.pinned[id] = !state.pinned[id]
+        savePinned()
+        renderFolders()
+      }
+    })(folder.id)
+    row.appendChild(pin)
     var caret = document.createElement('span')
     if (folder.hasChildren) {
       caret.className = 'folder-caret'
@@ -1919,6 +2001,16 @@ function startCompose (message) {
   }
 }
 
+// The composer is a textarea, so the typed part is plain text; a signature that
+// carries HTML (fonts, a logo, a table) needs the message sent as HTML, or the
+// recipient gets the stripped version and it does not match what Thunderbird
+// itself would send.
+function plainToHtml (text) {
+  return '<div style="white-space:pre-wrap">'
+    + String(text || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    + '</div>'
+}
+
 function sendMail () {
   var to = $('c-to').value.trim()
   if (!to) { setError('请填写收件人'); return }
@@ -1926,12 +2018,17 @@ function sendMail () {
   sendButton.disabled = true
   sendButton.textContent = '发送中…'
   var identity = $('c-from') && $('c-from').value ? $('c-from').value : ''
+  var chosenSig = activeSigOption()
+  var sigHtml = chosenSig && chosenSig.html ? String(chosenSig.text || '') : ''
+  var typed = String($('c-body').value || '')
+  var inserted = String(state.composeSig || '')
+  if (inserted) typed = typed.split(inserted).join('')
   var params = {
     to: to,
     cc: $('c-cc').value.trim(),
     subject: $('c-subject').value,
-    body: withSignature($('c-body').value, signatureForCompose()),
-    isPlainText: true,
+    body: sigHtml ? (plainToHtml(typed) + sigHtml) : withSignature($('c-body').value, signatureForCompose()),
+    isPlainText: !sigHtml,
   }
   // Send as the account whose signature is in the body, not as whatever
   // Thunderbird happens to consider default.
