@@ -783,6 +783,30 @@
     <div class="crow"><label>收件人</label><input class="input" id="c-to" placeholder="a@b.com, c@d.com"></div>
     <div class="crow"><label>抄送</label><input class="input" id="c-cc"></div>
     <div class="crow"><label>主题</label><input class="input" id="c-subject"></div>
+    <div class="rtoolbar" id="rtoolbar">
+      <button type="button" class="rtb" data-cmd="bold" title="加粗"><b>B</b></button>
+      <button type="button" class="rtb" data-cmd="italic" title="斜体"><i>I</i></button>
+      <button type="button" class="rtb" data-cmd="underline" title="下划线"><u>U</u></button>
+      <span class="rtsep"></span>
+      <select class="rtselect" id="rt-size" title="字号">
+        <option value="">字号</option>
+        <option value="12px">小</option>
+        <option value="13.5px">正文</option>
+        <option value="16px">大</option>
+        <option value="20px">特大</option>
+      </select>
+      <select class="rtselect" id="rt-line" title="行距">
+        <option value="">行距</option>
+        <option value="1.4">紧凑</option>
+        <option value="1.75">标准</option>
+        <option value="2.1">宽松</option>
+      </select>
+      <span class="rtsep"></span>
+      <button type="button" class="rtb" data-cmd="insertUnorderedList" title="项目符号">•</button>
+      <button type="button" class="rtb" data-cmd="insertOrderedList" title="编号">1.</button>
+      <button type="button" class="rtb" data-cmd="formatBlock" data-arg="blockquote" title="引用">❝</button>
+      <button type="button" class="rtb" data-cmd="removeFormat" title="清除格式">清</button>
+    </div>
     <div class="textarea richbody" id="c-body" contenteditable="true" data-placeholder="正文（支持 HTML，可以直接粘贴排版）"></div>
     <div class="sigbar">
       <div class="sigrow">
@@ -1049,6 +1073,8 @@ function renderPinned (host) {
     var row = document.createElement('div')
     row.className = 'folder pinned' + (folder.id === state.folderId ? ' active' : '')
     row.title = (folder.path || folder.name) + '（置顶副本）'
+    // Same gutter as the tree rows, so the star never lands on the folder icon.
+    row.style.paddingLeft = '24px'
     var icon = document.createElement('span')
     icon.className = 'folder-icon'
     icon.textContent = folderIcon(folder)
@@ -1091,15 +1117,15 @@ state.pinned = loadPinned()
 ;(function () {
   var style = document.createElement('style')
   style.textContent = '.folder{position:relative}'
-    + '.folder .pin{position:absolute;left:1px;top:50%;transform:translateY(-50%);z-index:1;'
+    // The star gets its OWN column. Reusing the caret's slot could only ever
+    // collide with it: hiding the caret on hover does nothing for a PINNED row,
+    // which shows its star all the time — which is exactly what the screenshot
+    // showed.
+    + '.folder .pin{position:absolute;left:6px;top:50%;transform:translateY(-50%);z-index:1;'
     + 'cursor:pointer;font-size:11px;line-height:1;color:var(--tb-text-dim);opacity:0;transition:opacity .12s}'
     + '.folder:hover .pin{opacity:.85}'
     + '.folder .pin:hover{opacity:1;color:var(--tb-accent)}'
     + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
-    // The star lands in the same slot as the expand caret, so the caret steps
-    // aside while the star is up. That is what stops the two colliding, and it
-    // costs no layout change — a reserved gutter would have moved every row.
-    + '.folder:hover .folder-caret{opacity:0}'
     + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent)}'
   document.head.appendChild(style)
 })()
@@ -1145,7 +1171,7 @@ function renderFolders () {
     row.className = 'folder'
       + (folder.depth > 0 ? ' child' : '')
       + (folder.id === state.folderId ? ' active' : '')
-    row.style.paddingLeft = (10 + folder.depth * 16) + 'px'
+    row.style.paddingLeft = (24 + folder.depth * 16) + 'px'
     if (folder.depth > 0) {
       // Vertical guide so a child reads as belonging to the folder above it.
       row.style.setProperty('--guide', (10 + (folder.depth - 1) * 16 + 7) + 'px')
@@ -3924,9 +3950,10 @@ function applySelectedSignature () {
   if (!option) return
   var text = String(option.text || '')
   var isHtml = option.html || /<[a-z][\s\S]*?>/i.test(text)
-  // A signature is set off the way a mail client does it: a blank line, a rule,
-  // a blank line, then the block. The same lead goes into the sent copy.
-  var lead = '<div><br></div><hr style="border:0;border-top:1px solid #9aa0a6;margin:10px 0"><div><br></div>'
+  // A signature is set off the way a mail client does it: a blank line, then a
+  // rule, then the block — and NOTHING after the rule, which otherwise left a
+  // visible gap between the line and the signature it introduces.
+  var lead = '<div><br></div><hr style="border:0;border-top:1px solid #9aa0a6;margin:10px 0">'
   var wrap = document.createElement('div')
   wrap.setAttribute('data-dsh-sig', '1')
   wrap.style.cssText = 'margin-top:12px'
@@ -4003,6 +4030,58 @@ function deleteSig () {
   applySelectedSignature()
   setNotice('签名已删除')
 }
+
+// ------------------------------------------------------------------ 富文本工具栏
+// mousedown, NOT click: a click moves focus out of the editor first, and the
+// command then has no selection to apply to. Size and line height are set on the
+// current block directly — execCommand's fontSize only takes the legacy 1-7 scale.
+;(function () {
+  var bar = $('rtoolbar')
+  if (!bar) return
+  var style = document.createElement('style')
+  style.textContent = '.rtoolbar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:2px 0 7px}'
+    + '.rtb{min-width:28px;height:26px;padding:0 7px;border:1px solid var(--tb-border);border-radius:7px;'
+    + 'background:transparent;color:var(--tb-text-dim);font:inherit;font-size:12.5px;line-height:1;cursor:pointer}'
+    + '.rtb:hover{background:var(--tb-hover);color:var(--tb-text);border-color:var(--tb-border-strong)}'
+    + '.rtselect{height:26px;border:1px solid var(--tb-border);border-radius:7px;background:color-mix(in srgb, var(--tb-bg) 76%, transparent);'
+    + 'color:var(--tb-text-dim);font:inherit;font-size:12px;padding:0 4px}'
+    + '.rtsep{width:1px;height:18px;background:var(--tb-border);margin:0 3px}'
+  document.head.appendChild(style)
+
+  bar.addEventListener('mousedown', function (event) {
+    var target = event.target && event.target.closest ? event.target.closest('[data-cmd]') : null
+    if (!target) return
+    event.preventDefault()
+    try {
+      document.execCommand(target.getAttribute('data-cmd'), false, target.getAttribute('data-arg') || null)
+    } catch (error) { /* not every build supports every command */ }
+    $('c-body').focus()
+  })
+
+  function currentBlock () {
+    var sel = window.getSelection ? window.getSelection() : null
+    var node = sel && sel.anchorNode
+    var editor = $('c-body')
+    while (node && node !== editor) {
+      if (node.nodeType === 1 && /^(DIV|P|LI|BLOCKQUOTE|H[1-6]|TD)$/.test(node.tagName)) return node
+      node = node.parentNode
+    }
+    return null
+  }
+
+  $('rt-size').onchange = function () {
+    var block = currentBlock()
+    if (block && this.value) block.style.fontSize = this.value
+    this.value = ''
+    $('c-body').focus()
+  }
+  $('rt-line').onchange = function () {
+    var block = currentBlock()
+    if (block && this.value) block.style.lineHeight = this.value
+    this.value = ''
+    $('c-body').focus()
+  }
+})()
 
 $('btn-compose').onclick = function () { startCompose(null) }
 $('c-from').onchange = function () {
