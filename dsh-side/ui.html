@@ -588,7 +588,67 @@
   html.ai-view #ai-askrow { padding: 0 16px 10px; }
   /* Reply/new-mail write into the panel's composer, which is in another tab. */
   html.ai-view #ai-reply,
-  html.ai-view #ai-new { display: none !important; }
+  html.ai-view #ai-new,
+  /* 「关闭」 closes the floating overlay in the panel. As a sidebar TAB there is
+     nothing to close — the tab is the container — and hiding the block there
+     produced an empty column. */
+  html.ai-view #ai-close { display: none !important; }
+
+  /* When the block really did move to the right sidebar, what is left behind in
+     the panel must stop being a floating window. It used to keep its fixed
+     centring and its shadow and become a hollow box hanging over the mail, with
+     nothing in it but a header — the visual leftover of the move. It is now a
+     slim strip at the foot of the panel that says where the output went. */
+  html.ai-mirrored #ai {
+    position: static;
+    left: auto;
+    top: auto;
+    bottom: auto;
+    transform: none;
+    width: auto;
+    max-height: none;
+    z-index: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    box-shadow: none;
+  }
+  html.ai-mirrored #ai .ai-body,
+  html.ai-mirrored #ai #ai-askrow,
+  html.ai-mirrored #ai .ai-model,
+  html.ai-mirrored #ai #ai-copy,
+  html.ai-mirrored #ai #ai-reply,
+  html.ai-mirrored #ai #ai-new,
+  html.ai-mirrored #ai #ai-close,
+  html.ai-mirrored #ai #ai-lang { display: none !important; }
+  /* One line, always. The panel column is narrow, and a hint that wraps to four
+     lines is a worse leftover than the box it replaced. */
+  html.ai-mirrored #ai .ai-head {
+    position: static;
+    gap: 8px;
+    padding: 7px 14px;
+    border-bottom: 0;
+    border-top: 1px solid var(--tb-border);
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    font-size: 12px;
+    flex-wrap: nowrap;
+    overflow: hidden;
+  }
+  html.ai-mirrored #ai .ai-head::after {
+    content: '已输出到右侧栏 AI 标签';
+    color: var(--tb-text-dim);
+    font-size: 11.5px;
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   /* ---------- unread threads, judged by the newest message ---------- */
   .thread-head.unread {
@@ -2330,8 +2390,11 @@ function renderRich (text) {
 
 function renderAi () {
   var panel = $('ai')
-  panel.hidden = !state.ai.open
-  if (!state.ai.open) return
+  // In the dedicated AI frame this block IS the page. Hiding it on 「关闭」 left a
+  // completely blank right sidebar with no way back — every other region is
+  // display:none under html.ai-view, so there was nothing left to click.
+  panel.hidden = AI_VIEW ? false : !state.ai.open
+  if (!state.ai.open && !AI_VIEW) return
   $('ai-title').textContent = state.ai.title || 'AI'
   $('ai-model').textContent = state.ai.model || ''
   $('ai-lang').hidden = state.ai.action !== 'translate'
@@ -5312,7 +5375,11 @@ $('rules-run').onclick = function () { runRulesNow(false) }
 
 $('btn-ai-sum').onclick = aiSummarizeSelection
 $('btn-ai-ask').onclick = aiAskSelection
-$('ai-close').onclick = function () { state.ai.open = false; renderAi() }
+$('ai-close').onclick = function () {
+  if (AI_VIEW) { renderAi(); return }
+  state.ai.open = false
+  renderAi()
+}
 $('ai-copy').onclick = aiCopy
 $('ai-reply').onclick = aiIntoReply
 $('ai-new').onclick = function () {
@@ -5429,11 +5496,8 @@ if (AI_VIEW) {
   }
 } else {
   // Mirroring needs the BetterSidebar service, so ask the client half once and
-  // stay fully inline when it is absent.
-  var mirrorCss = document.createElement('style')
-  mirrorCss.textContent = 'html.ai-mirrored #ai .ai-body,html.ai-mirrored #ai #ai-askrow{display:none !important}'
-    + 'html.ai-mirrored #ai .ai-head::after{content:"内容在右侧边栏的 AI 标签里";color:var(--tb-text-dim);font-size:11.5px;margin-left:auto}'
-  document.head.appendChild(mirrorCss)
+  // stay fully inline when it is absent. The styling for the mirrored strip lives
+  // in the stylesheet (html.ai-mirrored) rather than being injected here.
   dshCall('ping', {}, 10000).then(function (info) {
     state.aiRight = !!(info && info.betterSidebar && aiBus)
     if (state.aiRight) document.documentElement.classList.add('ai-mirrored')
