@@ -1035,29 +1035,38 @@ function renderPinned (host) {
 
 state.pinned = loadPinned()
 
-// The pin control lives on the toolbar, not inside a folder row: an extra flex
-// child in the row stole width from the ellipsised name and changed the layout of
-// every folder.
+// The pin star FLOATS over the row's left edge instead of sitting in it: as a
+// flex child it stole width from the ellipsised folder name and re-laid-out every
+// row. Absolutely positioned, it affects nothing.
 ;(function () {
-  var bar = document.querySelector('.bar')
-  if (!bar) return
-  var btn = document.createElement('button')
-  btn.className = 'btn'
-  btn.id = 'btn-pin'
-  btn.textContent = '置顶'
-  btn.title = '把当前文件夹置顶（只加一个副本入口，不移动原文件夹）'
-  btn.onclick = function () {
-    if (!state.folderId) { setError('先选一个文件夹'); return }
+  var style = document.createElement('style')
+  style.textContent = '.folder{position:relative}'
+    + '.folder .pin{position:absolute;left:1px;top:50%;transform:translateY(-50%);z-index:1;'
+    + 'cursor:pointer;font-size:11px;line-height:1;color:var(--tb-text-dim);opacity:0;transition:opacity .12s}'
+    + '.folder:hover .pin{opacity:.85}'
+    + '.folder .pin:hover{opacity:1;color:var(--tb-accent)}'
+    + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
+    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent)}'
+  document.head.appendChild(style)
+})()
+
+state.pinned = loadPinned()
+
+function folderPin (folder, inCopy) {
+  var pinned = !!(state.pinned && state.pinned[folder.id])
+  var pin = document.createElement('span')
+  pin.className = 'pin' + (pinned || inCopy ? ' on' : '')
+  pin.textContent = pinned ? '★' : '☆'
+  pin.title = inCopy ? '取消置顶' : (pinned ? '取消置顶' : '置顶到顶部（只加一个副本入口）')
+  pin.onclick = function (event) {
+    event.stopPropagation()
     state.pinned = state.pinned || {}
-    state.pinned[state.folderId] = !state.pinned[state.folderId]
+    state.pinned[folder.id] = inCopy ? false : !state.pinned[folder.id]
     savePinned()
     renderFolders()
-    setNotice(state.pinned[state.folderId] ? '已置顶（顶部多一个副本入口）' : '已取消置顶')
   }
-  var refresh = document.getElementById('btn-refresh')
-  if (refresh && refresh.parentElement === bar) bar.insertBefore(btn, refresh)
-  else bar.appendChild(btn)
-})()
+  return pin
+}
 
 function renderFolders () {
   var host = $('folders')
@@ -1088,10 +1097,9 @@ function renderFolders () {
       row.style.setProperty('--guide', (10 + (folder.depth - 1) * 16 + 7) + 'px')
     }
     row.title = folder.path || folder.name
-    // Pinning is done from the toolbar, NOT with a control inside the row: an
-    // extra flex child stole width from the ellipsised name and changed how every
-    // folder row laid out.
-    row.classList.toggle('pinned', !!(state.pinned && state.pinned[folder.id]))
+    // Floats over the row (see folderPin); it is absolutely positioned, so the
+    // row's flex layout is exactly what it was before pinning existed.
+    row.appendChild(folderPin(folder, false))
     var caret = document.createElement('span')
     if (folder.hasChildren) {
       caret.className = 'folder-caret'
@@ -3108,6 +3116,16 @@ function postJson (url, body) {
 // record so the panel can reopen that same session later.
 function bindThread (thread) {
   if (!thread) { setError('先选一封邮件'); return Promise.resolve(null) }
+  // ONE session per aggregated subject, not one per message: the binding key is
+  // (folder, normalised subject), so a thread that is already bound must reuse
+  // its conversation instead of minting another one on every message you open.
+  var known = sessionFor(thread.folderId, thread.subject)
+  if (known && known.sessionId) {
+    setNotice('这条邮件线已经有会话了，直接打开')
+    return dshCall('session/open', { sessionId: known.sessionId }, 20000)
+      .then(function () { return known })
+      .catch(function (error) { setError(String((error && error.message) || error)); return known })
+  }
   setNotice('正在把「' + thread.subject + '」挂到 DSH 会话…')
   var ids = thread.messages.map(function (m) { return m.id })
   return postJson('/api/thunderbird/session/create', {
