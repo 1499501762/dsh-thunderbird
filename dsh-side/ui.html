@@ -73,7 +73,7 @@
      so the only honest way to stop the duplicate was to drop it.
      The bar takes the reserved title strip instead, so its buttons clear the
      window drag region where one exists. */
-  .bar { padding-top: var(--tb-inset-top, 0px); padding-right: calc(14px + var(--tb-inset-right, 0px)); }
+  .bar { padding-top: var(--tb-inset-top, 0px); }
   .split { width: 7px; flex: none; cursor: col-resize; position: relative; }
   .split::before { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--tb-border); transition: background .12s; }
   .split:hover::before, .split.dragging::before { background: var(--tb-accent); }
@@ -96,7 +96,9 @@
   #search { flex: 0 0 auto; width: 150px; }
   .barmenu {
     position: fixed;
-    right: calc(14px + var(--tb-inset-right, 0px));
+    /* Hangs under the bar, which is already below the title row — so no caption
+       clearance here either. */
+    right: 14px;
     z-index: 140;
     display: flex;
     flex-direction: column;
@@ -366,10 +368,13 @@
     z-index: 5;
     gap: 7px;
     /* Longhands on purpose: a `padding` shorthand here would wipe the titlebar
-       strip and caption-button clearance set at the top of this sheet. */
+       strip set at the top of this sheet. */
     padding: 8px 12px;
     padding-top: calc(8px + var(--tb-inset-top, 0px));
-    padding-right: calc(12px + var(--tb-inset-right, 0px));
+    /* NOT padded for the caption cluster. `padding-top` already pushes this row's
+       content BELOW the window title row, so the caption buttons are never beside
+       it — reserving their width just left a dead strip on the right that pushed
+       every button in from the edge. */
     background: color-mix(in srgb, var(--tb-bg-1) 88%, transparent);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--tb-border);
@@ -4447,115 +4452,11 @@ function readToken (win, hosts, name) {
   return ''
 }
 
-// A computed custom property is a token stream, not a number: the shell declares
-//   --dsh-titlebar-safe-inset-right: calc(var(--dsh-desktop-windows-caption-width, 140px) + 44px)
-// so parseFloat() yields NaN. Do NOT evaluate it with a throwaway element: the
-// client half observes this document, so inserting a node re-triggers its mount
-// pass, which measures again — a mutation loop that pins the window. Use the
-// Window Controls Overlay API instead, which is the same source the shell's own
-// calc() reads.
-function captionClusterWidth (win) {
-  var overlay = win.navigator && win.navigator.windowControlsOverlay
-  if (overlay && typeof overlay.getTitlebarAreaRect === 'function') {
-    try {
-      var rect = overlay.getTitlebarAreaRect()
-      var width = win.innerWidth - rect.x - rect.width
-      if (isFinite(width) && width > 0) return width
-    } catch (error) { /* overlay not enabled */ }
-  }
-  return NaN
-}
-
-// The shell's clearance survives var() substitution but keeps its calc(), e.g.
-// "calc(140px + 44px)". Evaluate only that simple shape — sums of px/vw/vh — and
-// return NaN for anything richer, rather than guessing.
-function calcPx (win, text) {
-  var src = String(text || '').trim()
-  if (!src) return NaN
-  var body = src.replace(/^calc\(/i, '').replace(/\)$/, '').trim()
-  if (/var\(|env\(/i.test(body)) return NaN
-  var total = 0
-  var seen = false
-  var re = /([+-]?)\s*([\d.]+)(px|vw|vh)?/g
-  var match
-  while ((match = re.exec(body)) !== null) {
-    var n = parseFloat(match[2])
-    if (!isFinite(n)) return NaN
-    var unit = match[3] || 'px'
-    if (unit === 'vw') n = n * win.innerWidth / 100
-    else if (unit === 'vh') n = n * win.innerHeight / 100
-    total += (match[1] === '-' ? -1 : 1) * n
-    seen = true
-  }
-  if (!seen) return NaN
-  if (/[a-z]/i.test(body.replace(/[\d.\s+\-]|px|vw|vh/gi, ''))) return NaN
-  return total
-}
-
-// The shell's clearance is the caption cluster plus 44px, slack that also covers
-// the extra control the desktop titlebar injects next to those buttons.
-function safeRightInset (win, doc, hosts) {
-  var declared = String(readToken(win, hosts, '--dsh-titlebar-safe-inset-right') || '').trim()
-  if (/^-?[\d.]+px$/i.test(declared)) return parseFloat(declared)
-  var fromCalc = calcPx(win, declared)
-  if (isFinite(fromCalc) && fromCalc > 0) return fromCalc
-  var cluster = captionClusterWidth(win)
-  if (isFinite(cluster) && cluster > 0) return cluster + 44
-  var declaredCluster = calcPx(win, readToken(win, hosts, '--dsh-desktop-windows-caption-width'))
-  if (isFinite(declaredCluster) && declaredCluster > 0) return declaredCluster + 44
-  return NaN
-}
-
-// The window's caption buttons are drawn by the shell, not by this frame's
-// layout, so their width has to be reserved by hand. Prefer the declared token;
-// otherwise measure the control cluster pinned to the window's top-right corner
-// and reserve only the part that actually overlaps the panel.
-function captionInset (doc, win, hosts) {
-  var declared = safeRightInset(win, doc, hosts)
-  if (isFinite(declared) && declared > 0) return declared
-
-  // The panel's OWN frame is the right edge to measure against — in the
-  // right-sidebar case the shell window's frameElement is null, and window.top's
-  // width would over-reserve.
-  var frame = window.frameElement
-  var panelRight = win.innerWidth
-  try {
-    if (frame) panelRight = frame.getBoundingClientRect().right
-  } catch (error) { /* cross-origin frame: fall back to the viewport */ }
-
-  var minLeft = panelRight
-  // Only actual controls: a generic element scan latches onto layout furniture
-  // and reserves half the window.
-  var nodes = doc.querySelectorAll('button, [role="button"]')
-  for (var i = 0; i < nodes.length; i++) {
-    var node = nodes[i]
-    // never measure our own panel chrome
-    if (node.closest && node.closest("[data-dsh-thunderbird-view]") !== null) continue
-    var rect = node.getBoundingClientRect()
-    if (rect.width < 12 || rect.height === 0 || rect.height > 64) continue
-    if (rect.top > 12) continue
-    if (rect.right < panelRight - 6) continue
-    if (rect.left < minLeft) minLeft = rect.left
-  }
-  var inset = panelRight - minLeft
-  if (isFinite(inset) && inset >= 12) {
-    // Windows-style caption clusters are ~138px; anything wider means the scan
-    // latched onto a toolbar rather than the window buttons.
-    return Math.min(inset + 12, 200)
-  }
-  // Nothing measurable in the DOM: in the desktop shell the caption buttons can
-  // be drawn natively, and only the declared token knows about them. If the
-  // panel really does reach the window's right edge, reserve the cluster anyway
-  // — but never on macOS, where those buttons live on the left.
-  var shell = doc.querySelector('#dsh-desktop-windows-drag-region') !== null ||
-    doc.querySelector("[data-dsh-windows-drag-region]") !== null
-  if (shell && panelRight >= win.innerWidth - 8) {
-    var ua = String((win.navigator && win.navigator.userAgent) || '')
-    if (/Windows/i.test(ua)) return 138
-  }
-  return 0
-}
-
+// The window-caption clearance cluster (captionClusterWidth / calcPx /
+// safeRightInset / captionInset) used to live here. It is gone with its last
+// consumer: the probe measured 1300px in the live GUI, and every row that
+// reserved that width sits BELOW the title row, where the caption cluster is
+// not beside it. See README for the underlying platform notes.
 function mirrorTheme () {
   try {
     // The tokens live on the SHELL document, which is window.top whether the panel
@@ -4573,7 +4474,11 @@ function mirrorTheme () {
     var shielded = String(location.search || '').indexOf('shielded=1') >= 0
     var insetTop = parseFloat(inset)
     document.documentElement.style.setProperty('--tb-inset-top', shielded ? '0px' : (isFinite(insetTop) && insetTop > 0 ? insetTop + 'px' : (inset || '0px')))
-    document.documentElement.style.setProperty('--tb-inset-right', captionInset(doc, win, hosts) + 'px')
+    // No --tb-inset-right any more. It measured 1300px in the live GUI — the
+    // window-controls probe misfires in an embedded frame — and every row that
+    // used to reserve it (the bar, its overflow popup) is BELOW the title row,
+    // where the caption cluster is not beside it. A published value that wrong is
+    // worse than none: the next consumer of it would get a collapsed layout.
 
     // Every colour the panel paints comes from DSH's own theme tokens, so the
     // mail panel is the same surface as the app around it rather than a

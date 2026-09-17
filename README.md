@@ -533,16 +533,18 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
 - **DSH 暗色主题的 `brand-primary` 是近白色**（`#f9fafb`），直接当强调色会让「实心主按钮」
   变成白底白字。现在按亮度推出 `--tb-accent-fg`，hover/active 也直接用 DSH 自己的
   `--dsw-alias-interactive-bg-hover/active`。
-- **右上角避让**：`--dsh-titlebar-safe-inset-right` 在桌面版里不是像素值，而是
-  `calc(var(--dsh-desktop-windows-caption-width, 140px) + 44px)` —— 自定义属性的计算值
-  是**未求值的 token 流**，`parseFloat()` 直接得到 NaN，避让就静默消失了。现在按
-  纯 px → 自己解 `calc()` 的 px/vw/vh 和 → **Window Controls Overlay API**
-  （`navigator.windowControlsOverlay.getTitlebarAreaRect()`，和壳里那个 calc 同源）
-  → `caption-width + 44`（这 44px 就是给桌面版额外注入的那个按钮留的）→ DOM 控件簇
-  → Windows 兜底 184px 的顺序取。
-  ⚠️ **千万不要用"临时插一个 div 量宽度"的办法求值**：client 半区正观察着同一棵树，
+- **右上角避让：已整体移除**（连同 `captionClusterWidth` / `calcPx` / `safeRightInset` /
+  `captionInset` 四个函数）。历史：`--dsh-titlebar-safe-inset-right` 在桌面版里不是像素值，
+  而是 `calc(var(--dsh-desktop-windows-caption-width, 140px) + 44px)`，自定义属性的计算值是
+  **未求值的 token 流**，`parseFloat()` 得到 NaN，于是按"纯 px → 自解 calc → Window Controls
+  Overlay API → caption-width+44 → DOM 控件簇 → Windows 兜底 184px"的顺序兜。
+  **为什么删掉**：它在真实 GUI 里量出 **1300px**（WCO 的 `getTitlebarAreaRect()` 在嵌入 frame
+  里返回的是整个标题栏，不是按钮簇），而每条曾经预留它的行 —— `.bar` 和它的溢出弹窗 —— 都在
+  **标题行下面**（`.bar` 自己的 `padding-top` 就把内容推下去了），标题行右边的窗口按钮根本不在
+  它们旁边。结果是右侧一条 1312px 的死白，把整条工具栏从右边挤进来 —— 就是你看到的那张
+  "布局异常"。留一个量错到 1300px 的变量比不留更糟：下一个用它的地方会直接塌掉。
+  ⚠️ 仍然成立：**千万不要用"临时插一个 div 量宽度"的办法求值** —— client 半区正观察着同一棵树，
   插节点会再次触发它的挂载回调，于是又去测量 —— 自我维持的 mutation 死循环，把窗口卡死。
-  面板自己的 `.bar` 还必须用 **padding 长写**，否则一行 `padding: 8px 12px` 会把避让值抹掉。
 - **图片处理可以逐张改**：自动规则只在「内容确实很暗（深色像素 > 50%）**且**已经不贴边
   （说明是白纸上的墨迹而不是整块设计底板）」时才翻明度，其它情况只去白底、保留原色。
   点邮件里的任意图片循环 自动 → 只去白底 → 去白底+翻色 → 原样，选择按图片地址的哈希
