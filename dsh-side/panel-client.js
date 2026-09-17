@@ -397,7 +397,21 @@ window.__ModuleLoader__.load({
     }
 
     function reload () {
-      if (frameEl !== null) frameEl.src = UI_URL + '?t=' + Date.now()
+      if (frameEl === null) return
+      // Carry the existing query through. Rebuilding the URL from scratch dropped
+      // `shielded=1`, and the panel then re-applied the titlebar strip it had been
+      // told to ignore — a blank band across the top of the view, which is exactly
+      // the "refresh leaves an extra empty row" symptom.
+      var params = new URLSearchParams()
+      var current = String(frameEl.getAttribute('src') || '')
+      var at = current.indexOf('?')
+      if (at >= 0) {
+        new URLSearchParams(current.slice(at + 1)).forEach(function (value, key) {
+          if (key !== 't') params.set(key, value)
+        })
+      }
+      params.set('t', String(Date.now()))
+      frameEl.src = UI_URL + '?' + params.toString()
     }
 
     function pollStatus () {

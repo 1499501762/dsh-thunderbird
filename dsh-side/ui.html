@@ -575,7 +575,15 @@
     transform: translate(-50%, -50%);
     width: min(900px, calc(100vw - 56px));
     max-height: calc(100vh - 48px);
-    overflow: auto;
+    /* A max-height only CAPS the box — it still shrinks to its content, which is
+       exactly why "full height" was not full. A real height plus a single
+       scrolling region is what fills the window: the header rows and the footer
+       stay put and only the body moves. */
+    height: calc(100vh - 48px);
+    max-height: calc(100vh - 48px);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     z-index: 90;
     border: 1px solid var(--tb-glass-line);
     border-radius: 16px;
@@ -586,6 +594,12 @@
     box-shadow: 0 28px 80px rgba(0, 0, 0, .5);
   }
   .compose .crow > label { width: 56px; font-size: 12.5px; }
+  /* Fixed header rows and footer, one scrolling body. */
+  .compose > .crow, .compose > .rtoolbar, .compose > .sigbar { flex: 0 0 auto; }
+  .compose > #c-body { flex: 1 1 auto; min-height: 140px; overflow: auto; }
+  /* The action row is the last .crow: pinned under a rule so Send never scrolls
+     out of reach. */
+  .compose > .crow:last-child { margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--tb-glass-line); }
   .compose .input { border-radius: 10px; padding: 8px 12px; }
   // A real rich composer: the body is contenteditable, so pasted formatting, the
   // HTML signature and its images all survive — which is what "支持 HTML" means.
@@ -4077,7 +4091,7 @@ function deleteSig () {
     + '.rtcolor{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 5px;border:1px solid var(--tb-border);border-radius:7px;cursor:pointer}'
     + '.rtcolor:hover{border-color:var(--tb-border-strong);background:var(--tb-hover)}'
     + '.rtcolor input[type=color]{width:20px;height:18px;padding:0;border:0;background:transparent;cursor:pointer}'
-    + '.rtpop{position:fixed;z-index:120;display:grid;grid-template-columns:repeat(4,26px);gap:6px;padding:8px;'
+    + '.rtpop{position:fixed;z-index:120;display:grid;grid-template-columns:repeat(10,20px);gap:4px;padding:9px;'
     + 'border:1px solid var(--tb-glass-line);border-radius:10px;background:var(--tb-glass-1);'
     + 'backdrop-filter:var(--tb-glass-blur-strong);-webkit-backdrop-filter:var(--tb-glass-blur-strong);'
     + 'box-shadow:0 18px 44px rgba(0,0,0,.45)}'
@@ -4144,8 +4158,20 @@ function deleteSig () {
 
   // Preset swatches, with the picker kept as the last resort. Picking a colour
   // from a wheel while writing is a detour; a small palette is one click.
-  var FG_SWATCHES = ['#111111', '#5f6368', '#c0392b', '#d97706', '#1a7f37', '#1d4ed8', '#7c3aed', '#be185d']
-  var BG_SWATCHES = ['#ffffff', '#f1f3f4', '#ffe58f', '#d7f0d7', '#dbeafe', '#fde2e4', '#ede9fe', '#fce7f3']
+  // A Word-shaped palette: ten base colours across, four lighter tints of each
+  // below, then the picker. Word's grid is a palette you can hit blind — which is
+  // the whole point when you are writing rather than designing.
+  var WORD_BASES = ['#000000', '#7f7f7f', '#c0392b', '#e36c0a', '#bfa100', '#2e7d32', '#00838f', '#1565c0', '#4527a0', '#ad1457']
+  function tint (hex, ratio) {
+    var n = parseInt(hex.slice(1), 16)
+    var parts = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    return '#' + parts.map(function (c) {
+      var v = Math.round(c + (255 - c) * ratio)
+      return ('0' + v.toString(16)).slice(-2)
+    }).join('')
+  }
+  var STANDARD_SWATCHES = ['#c00000', '#ff0000', '#ffc000', '#ffff00', '#92d050', '#00b050', '#00b0f0', '#0070c0', '#002060', '#7030a0']
+  var BG_SWATCHES = ['#ffffff', '#f1f3f4', '#fde2e4', '#ffe58f', '#d7f0d7', '#dbeafe', '#ede9fe', '#fce7f3']
   var pop = document.createElement('div')
   pop.className = 'rtpop'
   pop.hidden = true
@@ -4153,8 +4179,18 @@ function deleteSig () {
 
   function openSwatches (which, anchor) {
     pop.innerHTML = ''
-    var colors = which === 'fg' ? FG_SWATCHES : BG_SWATCHES
     var command = which === 'fg' ? 'foreColor' : 'hiliteColor'
+    var colors
+    if (which === 'fg') {
+      // Word's grid: the ten base colours, then four tints of each row by row.
+      colors = []
+      for (var row = 0; row < 5; row++) {
+        for (var col = 0; col < WORD_BASES.length; col++) colors.push(tint(WORD_BASES[col], row * 0.2))
+      }
+      colors = colors.concat(STANDARD_SWATCHES)
+    } else {
+      colors = BG_SWATCHES
+    }
     for (var i = 0; i < colors.length; i++) {
       (function (color) {
         var sw = document.createElement('button')
@@ -4173,7 +4209,8 @@ function deleteSig () {
     custom.oninput = function () { colored(command, custom.value) }
     pop.appendChild(custom)
     var rect = anchor.getBoundingClientRect()
-    pop.style.left = Math.max(8, Math.min(Math.round(rect.left), window.innerWidth - 190)) + 'px'
+    var width = pop.hidden ? 260 : pop.getBoundingClientRect().width || 260
+    pop.style.left = Math.max(8, Math.min(Math.round(rect.left), window.innerWidth - width - 12)) + 'px'
     pop.style.top = Math.round(rect.bottom + 6) + 'px'
     pop.hidden = false
   }
