@@ -588,6 +588,52 @@
   .compose .input { border-radius: 10px; padding: 8px 12px; }
   .compose textarea.textarea { min-height: 260px; border-radius: 12px; padding: 12px; font-size: 13.5px; line-height: 1.7; }
 
+  /* Every bottom pane is a floating window now, not just the composer: they are
+     transient surfaces you want over the mail, not strips that shrink it. */
+  .ai, #rules, #sessions {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translateX(-50%);
+    width: min(780px, calc(100vw - 56px));
+    max-height: min(70vh, 680px);
+    z-index: 80;
+    overflow: hidden;
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 16px;
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    box-shadow: 0 28px 80px rgba(0, 0, 0, .5);
+  }
+  .ai { width: min(900px, calc(100vw - 56px)); }
+  #sessions { width: min(1040px, calc(100vw - 56px)); }
+  .ai-body, #rules .ai-body, #sessions .ai-body { overflow: auto; }
+  /* ?view=ai is the right-sidebar tab: there the AI block IS the page, so none of
+     the floating-window chrome applies. */
+  html.ai-view #ai {
+    position: static;
+    left: auto;
+    bottom: auto;
+    transform: none;
+    width: auto;
+    max-height: none;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .sigbar { display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--tb-glass-line); padding-top: 9px; }
+  .sigrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .sigrow > .siglbl { width: 56px; flex: none; font-size: 11.5px; color: var(--tb-text-dim); }
+  .sigchip { border: 1px solid var(--tb-border); background: transparent; color: var(--tb-text-dim); border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; cursor: pointer; }
+  .sigchip:hover { background: var(--tb-hover); color: var(--tb-text); }
+  .sigchip.on { border-color: color-mix(in srgb, var(--tb-accent) 45%, transparent); color: var(--tb-accent); background: color-mix(in srgb, var(--tb-accent) 14%, transparent); }
+  .sigchip.tb::after { content: 'TB'; margin-left: 6px; font-size: 9.5px; opacity: .7; letter-spacing: .5px; }
+  .sigedit { width: 100%; min-height: 150px; border-radius: 12px; padding: 10px 12px; font-size: 12.5px; line-height: 1.7; }
+
   /* ---------- glass on the surfaces that were still solid ----------
      The column alphas drop as well: at 72% the blur had almost nothing to work
      with, which is why "glass" only ever read on the two bars. */
@@ -713,10 +759,31 @@
   </div>
 
   <div class="compose" id="compose" hidden>
+    <div class="crow"><label>发件人</label><select class="input" id="c-from"></select></div>
     <div class="crow"><label>收件人</label><input class="input" id="c-to" placeholder="a@b.com, c@d.com"></div>
     <div class="crow"><label>抄送</label><input class="input" id="c-cc"></div>
     <div class="crow"><label>主题</label><input class="input" id="c-subject"></div>
     <textarea class="textarea" id="c-body" placeholder="正文（纯文本）"></textarea>
+    <div class="sigbar">
+      <div class="sigrow">
+        <span class="siglbl">签名</span>
+        <span class="sigrow" id="sig-tabs"></span>
+      </div>
+      <div class="sigrow">
+        <span class="siglbl"></span>
+        <span class="sigrow" id="sig-list"></span>
+        <span class="grow"></span>
+        <button class="btn" id="sig-new">新建</button>
+        <button class="btn" id="sig-edit">编辑</button>
+        <button class="btn" id="sig-del">删除</button>
+      </div>
+      <textarea class="textarea sigedit" id="sig-text" hidden placeholder="签名内容（纯文本。Thunderbird 自带的签名是 HTML，插入时会转成文本）"></textarea>
+      <div class="sigrow" id="sig-editrow" hidden>
+        <input class="input" id="sig-name" placeholder="签名名称（如：正式报价 / 简短）">
+        <button class="btn primary" id="sig-save">保存</button>
+        <button class="btn" id="sig-cancel">取消</button>
+      </div>
+    </div>
     <div class="crow">
       <button class="btn primary" id="btn-send">发送</button>
       <button class="btn" id="btn-cancel">取消</button>
@@ -1858,13 +1925,18 @@ function sendMail () {
   var sendButton = $('btn-send')
   sendButton.disabled = true
   sendButton.textContent = '发送中…'
-  call('messages.send', {
+  var identity = $('c-from') && $('c-from').value ? $('c-from').value : ''
+  var params = {
     to: to,
     cc: $('c-cc').value.trim(),
     subject: $('c-subject').value,
-    body: $('c-body').value,
+    body: withSignature($('c-body').value, signatureForCompose()),
     isPlainText: true,
-  }).then(function () {
+  }
+  // Send as the account whose signature is in the body, not as whatever
+  // Thunderbird happens to consider default.
+  if (identity) params.identityId = identity
+  call('messages.send', params).then(function () {
     $('compose').hidden = true
     setError('')
     setNotice('邮件已发送')
@@ -3444,6 +3516,242 @@ function restoreUiState () {
   } catch (error) { /* start with an empty cache */ }
 }
 restoreUiState()
+
+// --------------------------------------------------------------------- 签名
+// Thunderbird's own signature arrives on the identity, so it is always available
+// and read-only; the panel adds an editable library beside it, per identity. The
+// chosen signature is remembered per identity, and the body carries exactly one
+// copy — switching signatures must not stack them.
+var SIG_KEY = 'dsh-tb-sigs'
+
+function loadSigs () {
+  try { return JSON.parse(localStorage.getItem(SIG_KEY) || '{}') || {} } catch (error) { return {} }
+}
+function saveSigs (map) {
+  try { localStorage.setItem(SIG_KEY, JSON.stringify(map)) } catch (error) { /* no storage */ }
+}
+
+function identityList () {
+  var out = []
+  var accounts = state.accounts || []
+  for (var i = 0; i < accounts.length; i++) {
+    var ids = accounts[i].identities || []
+    for (var j = 0; j < ids.length; j++) {
+      out.push({
+        id: ids[j].id,
+        email: ids[j].email,
+        name: ids[j].name || ids[j].email,
+        accountName: accounts[i].name || accounts[i].id,
+        signature: ids[j].signature || '',
+      })
+    }
+  }
+  return out
+}
+
+function sigRecord (identityId) {
+  var store = loadSigs()
+  if (!store[identityId]) store[identityId] = { list: [], active: '' }
+  if (!Array.isArray(store[identityId].list)) store[identityId].list = []
+  return { store: store, record: store[identityId] }
+}
+
+function sigOptions (identity) {
+  var options = []
+  if (identity && identity.signature) {
+    options.push({ id: 'tb', name: 'Thunderbird', text: identity.signature, html: true, readonly: true })
+  }
+  var record = identity ? sigRecord(identity.id).record : { list: [] }
+  for (var i = 0; i < record.list.length; i++) options.push(record.list[i])
+  return options
+}
+
+// Thunderbird reports `signatureIsHTML: false` for an HTML signature on this
+// build, so the content decides instead of the flag.
+function sigToText (option) {
+  if (!option) return ''
+  var text = String(option.text || '')
+  if (option.html || /<[a-z][\s\S]*?>/i.test(text)) return stripHtml(text)
+  return text.trim()
+}
+
+function currentIdentity () {
+  var ids = identityList()
+  var chosen = $('c-from') && $('c-from').value ? $('c-from').value : ''
+  for (var i = 0; i < ids.length; i++) if (ids[i].id === chosen) return ids[i]
+  return ids[0] || null
+}
+
+function activeSigOption () {
+  var identity = currentIdentity()
+  var options = sigOptions(identity)
+  var activeId = identity ? sigRecord(identity.id).record.active : ''
+  for (var i = 0; i < options.length; i++) if (options[i].id === activeId) return options[i]
+  return options[0] || null
+}
+
+function signatureForCompose () {
+  return sigToText(activeSigOption())
+}
+
+// Replace, never append: the previous signature is removed by its own text, so
+// switching does not leave two and sending does not add a second copy.
+function withSignature (body, text) {
+  var base = String(body || '')
+  var old = String(state.composeSig || '')
+  if (old && base.indexOf(old) >= 0) base = base.split(old).join('')
+  state.composeSig = text || ''
+  base = base.replace(/\s+$/, '')
+  return text ? base + '\n\n' + text : base
+}
+
+function sigChip (label, on, extra, handler) {
+  var chip = document.createElement('button')
+  chip.type = 'button'
+  chip.className = 'sigchip' + (on ? ' on' : '') + (extra ? ' ' + extra : '')
+  chip.textContent = label
+  chip.onclick = handler
+  return chip
+}
+
+function renderSigbar () {
+  if (!$('sigbar')) return
+  var ids = identityList()
+  var from = $('c-from')
+  if (from.options.length !== ids.length) {
+    from.innerHTML = ''
+    for (var i = 0; i < ids.length; i++) {
+      var option = document.createElement('option')
+      option.value = ids[i].id
+      option.textContent = ids[i].email || ids[i].name
+      from.appendChild(option)
+    }
+    var remembered = ''
+    try { remembered = localStorage.getItem('dsh-tb-from') || '' } catch (error) { remembered = '' }
+    for (var r = 0; r < ids.length; r++) if (ids[r].id === remembered) from.value = ids[r].id
+  }
+  var identity = currentIdentity()
+
+  var tabs = $('sig-tabs')
+  tabs.innerHTML = ''
+  for (var t = 0; t < ids.length; t++) {
+    tabs.appendChild(sigChip(ids[t].email || ids[t].name, identity && identity.id === ids[t].id, '',
+      (function (id) {
+        return function () {
+          $('c-from').value = id
+          try { localStorage.setItem('dsh-tb-from', id) } catch (error) { /* ignore */ }
+          renderSigbar()
+          applySelectedSignature()
+        }
+      })(ids[t].id)))
+  }
+
+  var options = sigOptions(identity)
+  var list = $('sig-list')
+  list.innerHTML = ''
+  if (!options.length) {
+    var none = document.createElement('span')
+    none.className = 'meta'
+    none.textContent = '这个账号还没有签名，点「新建」加一个'
+    list.appendChild(none)
+  }
+  var active = activeSigOption()
+  for (var o = 0; o < options.length; o++) {
+    list.appendChild(sigChip(options[o].name || '签名',
+      active && options[o].id === active.id,
+      options[o].readonly ? 'tb' : '',
+      (function (option) {
+        return function () {
+          if (!identity) return
+          var got = sigRecord(identity.id)
+          got.record.active = option.id
+          saveSigs(got.store)
+          renderSigbar()
+          applySelectedSignature()
+        }
+      })(options[o])))
+  }
+}
+
+function applySelectedSignature () {
+  var body = $('c-body')
+  body.value = withSignature(body.value, signatureForCompose())
+}
+
+// The composer is opened from several places, so wrap it once instead of editing
+// every call site.
+var baseStartCompose = startCompose
+startCompose = function (message) {
+  state.composeSig = ''
+  baseStartCompose(message)
+  renderSigbar()
+  applySelectedSignature()
+}
+
+function openSigEditor (option) {
+  if (!currentIdentity()) { setError('还没有可用的发件账号'); return }
+  state.sigDraft = { option: option && !option.readonly ? option : null }
+  $('sig-name').value = state.sigDraft.option
+    ? (state.sigDraft.option.name || '')
+    : (option && option.readonly ? 'Thunderbird 签名的副本' : '')
+  $('sig-text').value = option ? sigToText(option) : ''
+  $('sig-text').hidden = false
+  $('sig-editrow').hidden = false
+  $('sig-text').focus()
+}
+
+function saveSig () {
+  var identity = currentIdentity()
+  if (!identity) { setError('还没有可用的发件账号'); return }
+  var text = $('sig-text').value.trim()
+  if (!text) { setError('签名内容不能为空'); return }
+  var name = $('sig-name').value.trim() || '未命名签名'
+  var got = sigRecord(identity.id)
+  if (state.sigDraft && state.sigDraft.option) {
+    state.sigDraft.option.name = name
+    state.sigDraft.option.text = text
+    state.sigDraft.option.html = false
+  } else {
+    var made = { id: 's' + Date.now().toString(36), name: name, text: text, html: false }
+    got.record.list.push(made)
+    got.record.active = made.id
+  }
+  saveSigs(got.store)
+  $('sig-text').hidden = true
+  $('sig-editrow').hidden = true
+  renderSigbar()
+  applySelectedSignature()
+  setNotice('签名已保存到 ' + (identity.email || identity.name))
+}
+
+function deleteSig () {
+  var identity = currentIdentity()
+  var active = activeSigOption()
+  if (!identity || !active) return
+  if (active.readonly) { setError('Thunderbird 自带的签名不能在这里删除，可以「编辑」成一份副本再改'); return }
+  var got = sigRecord(identity.id)
+  got.record.list = got.record.list.filter(function (item) { return item.id !== active.id })
+  if (got.record.active === active.id) got.record.active = ''
+  saveSigs(got.store)
+  renderSigbar()
+  applySelectedSignature()
+  setNotice('签名已删除')
+}
+
+$('btn-compose').onclick = function () { startCompose(null) }
+$('c-from').onchange = function () {
+  try { localStorage.setItem('dsh-tb-from', $('c-from').value) } catch (error) { /* ignore */ }
+  renderSigbar()
+  applySelectedSignature()
+}
+$('sig-new').onclick = function () { openSigEditor(null) }
+$('sig-edit').onclick = function () { openSigEditor(activeSigOption()) }
+$('sig-del').onclick = function () { deleteSig() }
+$('sig-save').onclick = function () { saveSig() }
+$('sig-cancel').onclick = function () {
+  $('sig-text').hidden = true
+  $('sig-editrow').hidden = true
+}
 
 $('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
 // The toolbar's own style lives here rather than in the sheet because it is one
