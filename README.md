@@ -126,6 +126,81 @@ host 半区还把这套能力注册成了 DSH 的**模型工具**，所以**任�
 
 工具描述里明确写了 `thunderbird_send` 会真的发信，所以只有你要求时才会被调用。
 
+## 进 DSH 右侧栏（而不是只当一个中央列）
+
+面板有两种呈现方式，`panel-client.js` 都做了：
+
+1. **中央列 iframe**：把 `/api/thunderbird/ui` 塞进一个普通工作区标签。
+2. **DSH 原生右侧栏标签**：这是默认想走的路。DSH 的右侧栏由 `dsh-better-sidebar`
+   服务管理，它把注册表暴露成 `ctx.betterSidebar`：
+
+   ```
+   sidebar.registerTab({ id, title, description, order, single, component })
+   sidebar.openTab({ type, url, title })
+   sidebar.isTabEnabled(type)
+   ```
+
+   client 半区用它注册一个自己的 tab 类型 **`dsh-thunderbird:ai`**，
+   再用 `require('react')` 的 `createElement` 传一个 iframe 组件（client 半区是普通
+   DOM/JS，不能写 JSX）。
+
+⚠️ **两个必须知道的坑**：
+
+- **`openTab` 对未知或未启用的 tab 类型是静默失败的** —— 不抛错、不返回错误，
+  只是什么都不发生。所以注册之后一定要用 `isTabEnabled(type)` 确认一次，
+  否则你会对着一个"成功"的调用排查半天。
+- **内置的 `browser` tab 类型不能用**：它的 iframe 沙箱没有 `allow-same-origin`，
+  页面是 opaque origin，读不到父页面的 `--dsw-*` 主题变量，也拿不到
+  `navigator.windowControlsOverlay`。必须注册自己的插件名下的 tab 类型。
+
+注册之后，`/api/thunderbird/ui?view=ai` 会以"AI 块本身即页面"的模式渲染
+（`html.ai-view` 去掉所有悬浮窗外框）。
+
+## 撰写、签名与右键菜单
+
+### 撰写窗口
+
+`写邮件` / `回复` 打开的是一个**固定头尾、中间滚动**的悬浮窗：收件人、抄送、主题、
+工具栏和底部按钮都不随正文滚动。可选字段（抄送 / 主题）为空时收成一个 `+` 按钮，
+点开才展开 —— 回复时主题已填，所以自动是展开的。
+
+正文是 `contenteditable`，粘贴进来保留排版（`Ctrl+Shift+V` 保留原样，
+`Ctrl+V` 做朴素清洗）。工具栏是 Word 形状的色卡：10 个基色 × 4 档浅色 + 标准色，
+取色器只作为最后一项保留。
+
+**发出去的是什么，编辑器里存的就是什么**：签名以原始 HTML 追加，
+`file://` 图片在编辑时经 host 代理显示，发送时还原成原始 `src`。
+
+### 签名编辑器（独立窗口）
+
+签名编辑**不在撰写窗口里**：顶栏「签名」按钮或撰写窗的「签名」按钮打开一个独立悬浮窗。
+它按账号管理签名库。
+
+- 编辑器是真 `contenteditable`：加粗、颜色、列表、图片都保留；
+- 「图」插入本地图片会转成 `data:` URL，所以签名自带图片，别的机器上也显示得出来；
+- 「`</>`」切 HTML 源码视图 —— Thunderbird 的签名本来就是 HTML，没有这个入口就没法修；
+- Thunderbird 自带签名是只读的，点「编辑」会开一份**副本**，不会回写账号设置。
+
+### 右键菜单
+
+一个元素、三套条目（`ui.html` 的 `CTX_TEXT_ITEMS` / `ctxMailItems`）：
+
+| 上下文 | 条目 |
+| --- | --- |
+| 正文（撰写区 / 签名编辑器） | 剪切 · 复制 · 粘贴 · 粘贴为纯文本 · 全选 · 撤销 · 重做 · 清除格式 · 插入分割线 · 插入日期时间 |
+| 邮件列表 / 阅读栏 | 回复 · 回复全部 · 转发 · 标为已读/未读 · 加星标 · 复制主题 · 复制发件人地址 · 导出为 .eml · 打印 · 移动到… · 删除 |
+| 阅读栏正文 | 上面两套，文字命令在前（光标就在文字里） |
+
+浏览器的 `execCommand('paste')` 已经被所有浏览器禁了很多年，所以"粘贴"走
+`navigator.clipboard.read()`，拿不到权限时会明确提示用 `Ctrl+V`，而不是假装粘了。
+
+「移动到…」把菜单**原地换成**文件夹列表（带缩进）而不是挂二级菜单：邮件客户端的
+文件夹树很长，二级菜单经常掉到窗口外面。
+
+「导出为 .eml」由面板自己按已取到的头 + 正文重新拼一封 `multipart/alternative`，
+是**重新生成**而不是服务端原始字节 —— 扩展侧目前没有暴露出 `messages.getRaw`。
+它能在任何邮件客户端里打开。
+
 ## 分类规则（原生动作）
 
 Thunderbird 的 WebExtension API **不暴露原生过滤器**（没有 `messenger.filters`），所以"匹配"
@@ -352,12 +427,15 @@ Thunderbird：没有有效 stdout 时 Thunderbird 会直接起不来（踩过，
 
 ## 已知限制
 
-- `main` 面板是**中央列**，侧边栏提供入口图标。DSH 右侧栏的 tab 类型由 `dsh-better-sidebar`
-  自己的注册表管理，动态插件加不进去。
 - **发送邮件未在真实账号上验证**：代码走 `compose.beginNew(null, details)` +
   `compose.sendMessage(tabId, {mode:'sendNow'})`（TB 91+ 路径），对 mock 验证通过，
   `ping` 里 `capabilities.compose` 为 true；但我没有用你的账号真发过信。
+  其余**写操作都已在真实邮箱上跑通并核对**：已读/未读、星标、`messages.move`
+  （同文件夹空转返回 `{moved:1}`，确认参数与 `folderId` 格式正确）、右键菜单的
+  `messages.update` 往返（加星标 → 取消星标，邮箱状态已还原）。
+  为了不留下副作用，**没有对真实邮件做跨文件夹移动或删除**。
 - 删除按钮走 Thunderbird 默认策略（有废纸篓就进废纸篓），不做永久删除。
+- 「导出为 .eml」是面板重新拼的，不是服务端原始字节（见上）。
 - 附件只能看列表，不能下载/预览；日历、通讯录写操作未做（`addressBooks.list` 只读）。
 - HTML 正文视图做了朴素清洗（去 script/style/iframe/内联事件、拦截链接跳转），不是安全沙箱。
 - 面板 HTML 每次请求现读磁盘，改完刷新即生效；路径由 `dsh-side/thunderbird-host.mjs` 里的
@@ -365,7 +443,11 @@ Thunderbird：没有有效 stdout 时 Thunderbird 会直接起不来（踩过，
 - **改 host 半区必须重启 DSH**：它是真实的 ESM 模块，Cordis 按模块 URL 缓存，`patchReload: live`
   只监听 profile 的 patch 文件，不会重新 import 这个模块。client 半区（面板宿主）改完至少
   要刷新页面。改完 host 之前可以用 `node dev/test-host.mjs` 先验证：
-  它把 host 挂到假 Cordis ctx 上，让协议替身去轮询，跑 27 条端到端断言。
+  它把 host 挂到假 Cordis ctx 上，让协议替身去轮询，跑 31 条端到端断言。
+  改 `ui.html` 里的内联脚本后跑 `node dev/check-panel.mjs`：它 `new Function()` 解析一遍，
+  能抓住"少一个括号"和"`//` 注释吞掉下一个函数声明"这类不会被浏览器报出来的错。
+- 面板页面**会被浏览器缓存**：改完 `ui.html` 后 `ego_navigate`/普通刷新可能仍拿旧版，
+  验收时带一个 `?cb=<时间戳>` 强制取新。
 
 ## 打包 Thunderbird 插件（.xpi）
 
@@ -412,10 +494,13 @@ dsh-thunderbird/
 ├─ dev/
 │  ├─ build_xpi.py             用 zipfile 打 .xpi（正斜杠）
 │  ├─ install-extension.py     Marionette + AddonManager 零点击安装
-│  ├─ test-host.mjs            把 host 半区挂到假 Cordis ctx 上跑端到端断言
+│  ├─ test-host.mjs            把 host 半区挂到假 Cordis ctx 上跑 31 条端到端断言
+│  ├─ check-panel.mjs          解析 ui.html 里的内联脚本，抓语法错
 │  ├─ probe-manifest.py        往 AddonManager 灌最小 manifest，定位 -3 的成因
+│  ├─ probe-inline-images.mjs  探测邮件内联图片在各客户端的还原情况
 │  ├─ marionette-eval.py       在真实 Thunderbird 里跑 JS（chrome / system 沙箱）
 │  ├─ mock-thunderbird.js      无 Thunderbird 时的协议替身
+│  ├─ addon-state.js           打印扩展的加载状态（供 PowerShell 调用）
 │  └─ inspect-addons.js        查插件在配置目录里的加载状态
 ├─ docs/                       面板实拍截图（含真实邮件，已 gitignore）
 ├─ install-addon.ps1           调 dev/install-extension.py
