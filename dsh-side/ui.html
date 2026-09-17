@@ -595,7 +595,7 @@
   }
   .compose .crow > label { width: 56px; font-size: 12.5px; }
   /* Fixed header rows and footer, one scrolling body. */
-  .compose > .crow, .compose > .rtoolbar, .compose > .sigbar { flex: 0 0 auto; }
+  .compose > .crow, .compose > .rtoolbar { flex: 0 0 auto; }
   .compose > #c-body { flex: 1 1 auto; min-height: 140px; overflow: auto; }
   /* The action row is the last .crow: pinned under a rule so Send never scrolls
      out of reach. */
@@ -625,7 +625,7 @@
 
   /* Every bottom pane is a floating window now, not just the composer: they are
      transient surfaces you want over the mail, not strips that shrink it. */
-  .ai, #rules, #sessions {
+  .ai, #rules, #sessions, #signatures {
     position: fixed;
     left: 50%;
     top: 50%;
@@ -646,7 +646,8 @@
   }
   .ai { width: min(900px, calc(100vw - 56px)); }
   #sessions { width: min(1040px, calc(100vw - 56px)); }
-  .ai-body, #rules .ai-body, #sessions .ai-body { overflow: auto; }
+  #signatures { width: min(720px, calc(100vw - 56px)); }
+  .ai-body, #rules .ai-body, #sessions .ai-body, #signatures .ai-body { overflow: auto; }
   /* ?view=ai is the right-sidebar tab: there the AI block IS the page, so none of
      the floating-window chrome applies. */
   html.ai-view #ai {
@@ -663,14 +664,34 @@
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-  .sigbar { display: flex; flex-direction: column; gap: 7px; border-top: 1px solid var(--tb-glass-line); padding-top: 9px; }
+  /* The signature editor is its own window now, so the bar is just the body of
+     that window — no top rule, no raise against the composer. */
+  .sigbar { display: flex; flex-direction: column; gap: 9px; }
   .sigrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .sigrow > .siglbl { width: 56px; flex: none; font-size: 11.5px; color: var(--tb-text-dim); }
+  .sigrow > .siglbl { width: 40px; flex: none; font-size: 11.5px; color: var(--tb-text-dim); }
   .sigchip { border: 1px solid var(--tb-border); background: transparent; color: var(--tb-text-dim); border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; cursor: pointer; }
   .sigchip:hover { background: var(--tb-hover); color: var(--tb-text); }
   .sigchip.on { border-color: color-mix(in srgb, var(--tb-accent) 45%, transparent); color: var(--tb-accent); background: color-mix(in srgb, var(--tb-accent) 14%, transparent); }
   .sigchip.tb::after { content: 'TB'; margin-left: 6px; font-size: 9.5px; opacity: .7; letter-spacing: .5px; }
-  .sigedit { width: 100%; min-height: 150px; border-radius: 12px; padding: 10px 12px; font-size: 12.5px; line-height: 1.7; }
+  /* Rich-text signature editor: a real contenteditable, so bold, colours, tables
+     and images survive exactly as they will be sent. */
+  .sigeditwrap { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; border-top: 1px solid var(--tb-glass-line); margin-top: 3px; }
+  .sigedit {
+    width: 100%;
+    min-height: 220px;
+    max-height: 42vh;
+    overflow: auto;
+    border: 1px solid var(--tb-border);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.7;
+    white-space: normal;
+    outline: none;
+  }
+  .sigedit:focus { border-color: var(--tb-border-strong); }
+  .sigedit img { max-width: 100%; }
+  #sig-source { white-space: pre; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 
   /* ---------- glass on the surfaces that were still solid ----------
      The column alphas drop as well: at 72% the blur had almost nothing to work
@@ -702,6 +723,7 @@
     <button class="btn" id="btn-refresh">刷新</button>
     <button class="btn" id="btn-rules">分类规则</button>
     <button class="btn" id="btn-sessions">会话</button>
+    <button class="btn" id="btn-signatures">签名</button>
     <button class="btn" id="btn-group" title="按主题聚合">聚合</button>
     <button class="btn" id="btn-ai-sum" hidden>总结已选</button>
     <button class="btn" id="btn-ai-ask" hidden>提问已选</button>
@@ -789,6 +811,55 @@
     <div class="ai-body" id="sess-body"></div>
   </div>
 
+  <div class="ai" id="signatures" hidden>
+    <div class="ai-head">
+      <span class="ai-title">签名</span>
+      <span class="ai-model" id="sig-note"></span>
+      <span class="grow"></span>
+      <button class="btn" id="sig-new">新建</button>
+      <button class="btn" id="sig-edit">编辑</button>
+      <button class="btn" id="sig-del">删除</button>
+      <button class="btn" id="sig-close">关闭</button>
+    </div>
+    <div class="ai-body">
+      <div class="sigbar">
+        <div class="sigrow">
+          <span class="siglbl">账号</span>
+          <span class="sigrow" id="sig-tabs"></span>
+        </div>
+        <div class="sigrow">
+          <span class="siglbl">签名</span>
+          <span class="sigrow" id="sig-list"></span>
+        </div>
+        <div class="sigeditwrap" id="sig-editwrap" hidden>
+          <div class="sigrow">
+            <span class="siglbl">名称</span>
+            <input class="input grow" id="sig-name" placeholder="签名名称（如：正式报价 / 简短）">
+            <button class="btn primary" id="sig-save">保存</button>
+            <button class="btn" id="sig-cancel">取消</button>
+          </div>
+          <div class="rtoolbar" id="sig-toolbar">
+            <button type="button" class="rtb" data-cmd="bold" title="加粗"><b>B</b></button>
+            <button type="button" class="rtb" data-cmd="italic" title="斜体"><i>I</i></button>
+            <button type="button" class="rtb" data-cmd="underline" title="下划线"><u>U</u></button>
+            <span class="rtsep"></span>
+            <button type="button" class="rtb" data-cmd="insertUnorderedList" title="项目符号">•</button>
+            <button type="button" class="rtb" data-cmd="insertOrderedList" title="编号">1.</button>
+            <button type="button" class="rtb" data-cmd="removeFormat" title="清除格式">清</button>
+            <span class="rtsep"></span>
+            <button type="button" class="rtb" id="sig-fg-btn" title="文字颜色"><span style="border-bottom:2px solid #c0392b;padding:0 2px">A</span></button>
+            <button type="button" class="rtb" id="sig-bg-btn" title="文字背景色"><span style="background:#ffe58f;padding:0 2px">A</span></button>
+            <span class="rtsep"></span>
+            <button type="button" class="rtb" id="sig-img-btn" title="插入本地图片（会被嵌入邮件）">图</button>
+            <button type="button" class="rtb" id="sig-html-btn" title="查看 / 编辑 HTML 源码">&lt;/&gt;</button>
+          </div>
+          <div class="textarea richbody sigedit" id="sig-text" contenteditable="true"
+               data-placeholder="签名内容（支持富文本、图片、链接）"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="selmenu" id="selmenu" hidden>
     <button data-act="ask">问 AI</button>
     <button data-act="summarize">总结</button>
@@ -797,10 +868,15 @@
   </div>
 
   <div class="compose" id="compose" hidden>
-    <div class="crow"><label>发件人</label><select class="input" id="c-from"></select></div>
-    <div class="crow"><label>收件人</label><input class="input" id="c-to" placeholder="a@b.com, c@d.com"></div>
-    <div class="crow"><label>抄送</label><input class="input" id="c-cc"></div>
-    <div class="crow"><label>主题</label><input class="input" id="c-subject"></div>
+    <div class="crow" id="row-from"><label>发件人</label><select class="input" id="c-from"></select></div>
+    <div class="crow" id="row-to"><label>收件人</label><input class="input" id="c-to" placeholder="a@b.com, c@d.com"></div>
+    <div class="crow" id="row-cc" hidden><label>抄送</label><input class="input" id="c-cc"></div>
+    <div class="crow" id="row-subject" hidden><label>主题</label><input class="input" id="c-subject"></div>
+    <div class="crow" id="row-more">
+      <span class="siglbl"></span>
+      <button class="btn" id="add-cc" type="button">+ 抄送</button>
+      <button class="btn" id="add-subject" type="button">+ 主题</button>
+    </div>
     <div class="rtoolbar" id="rtoolbar">
       <button type="button" class="rtb" data-cmd="bold" title="加粗"><b>B</b></button>
       <button type="button" class="rtb" data-cmd="italic" title="斜体"><i>I</i></button>
@@ -829,31 +905,12 @@
       <button type="button" class="rtb" id="rt-bg-btn" title="文字背景色（色卡）"><span style="background:#ffe58f;padding:0 2px">A</span></button>
     </div>
     <div class="textarea richbody" id="c-body" contenteditable="true" data-placeholder="正文（支持 HTML，可以直接粘贴排版）"></div>
-    <div class="sigbar">
-      <div class="sigrow">
-        <span class="siglbl">签名</span>
-        <span class="sigrow" id="sig-tabs"></span>
-      </div>
-      <div class="sigrow">
-        <span class="siglbl"></span>
-        <span class="sigrow" id="sig-list"></span>
-        <span class="grow"></span>
-        <button class="btn" id="sig-new">新建</button>
-        <button class="btn" id="sig-edit">编辑</button>
-        <button class="btn" id="sig-del">删除</button>
-      </div>
-      <textarea class="textarea sigedit" id="sig-text" hidden placeholder="签名内容（纯文本。Thunderbird 自带的签名是 HTML，插入时会转成文本）"></textarea>
-      <div class="sigrow" id="sig-editrow" hidden>
-        <input class="input" id="sig-name" placeholder="签名名称（如：正式报价 / 简短）">
-        <button class="btn primary" id="sig-save">保存</button>
-        <button class="btn" id="sig-cancel">取消</button>
-      </div>
-    </div>
     <div class="crow">
       <button class="btn primary" id="btn-send">发送</button>
       <button class="btn" id="btn-cancel">取消</button>
       <button class="btn" id="btn-ai-draft">AI 代写</button>
-      <span class="meta">通过 Thunderbird 的身份发送</span>
+      <button class="btn" id="btn-sig-pick" title="选择 / 编辑签名（独立窗口）">签名</button>
+      <span class="meta" id="c-sig-note">通过 Thunderbird 的身份发送</span>
     </div>
   </div>
 
@@ -2464,7 +2521,40 @@ function aiIntoReply () {
   if (!typedTo) $('c-to').value = state.current ? emailOf(state.current.author) : ''
   $('c-subject').value = /^re:/i.test(subject) ? subject : ('Re: ' + subject)
   $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
+  syncComposeOptional()
   setNotice('已填入撰写区，确认后再点发送')
+}
+
+// Optional header fields are folded away while they are empty. A reply needs the
+// subject and a plain letter needs neither, so the state is derived from what is
+// actually in the box rather than from a separate flag that can drift.
+var COMPOSE_OPTIONAL = ['cc', 'subject']
+function composeField (key, show, focus) {
+  var row = $('row-' + key)
+  if (!row) return
+  row.hidden = !show
+  var add = document.getElementById('add-' + key)
+  if (add) add.hidden = !!show
+  if (show && focus) { var input = $('c-' + key); if (input) input.focus() }
+  syncComposeMore()
+}
+function syncComposeMore () {
+  var more = $('row-more')
+  if (!more) return
+  var left = false
+  for (var i = 0; i < COMPOSE_OPTIONAL.length; i++) {
+    var add = document.getElementById('add-' + COMPOSE_OPTIONAL[i])
+    if (add && !add.hidden) left = true
+  }
+  more.hidden = !left
+}
+function syncComposeOptional () {
+  for (var i = 0; i < COMPOSE_OPTIONAL.length; i++) {
+    var key = COMPOSE_OPTIONAL[i]
+    var input = $('c-' + key)
+    composeField(key, !!(input && String(input.value || '').trim()))
+  }
+  syncComposeMore()
 }
 
 function togglePick (id) {
@@ -3855,21 +3945,9 @@ function activeSigOption () {
   return options[0] || null
 }
 
-function signatureForCompose () {
-  return sigToText(activeSigOption())
-}
-
-// Replace, never append: the previous signature is removed by its own text, so
-// switching does not leave two and sending does not add a second copy.
-function withSignature (body, text) {
-  var base = String(body || '')
-  var old = String(state.composeSig || '')
-  if (old && base.indexOf(old) >= 0) base = base.split(old).join('')
-  state.composeSig = text || ''
-  base = base.replace(/\s+$/, '')
-  return text ? base + '\n\n' + text : base
-}
-
+// The signature used to be spliced into the body by text replacement, which is
+// why switching signatures could stack them. It is now a real block inside the
+// rich editor, replaced by selector, so no text-matching helper is needed here.
 function sigChip (label, on, extra, handler) {
   var chip = document.createElement('button')
   chip.type = 'button'
@@ -3880,10 +3958,11 @@ function sigChip (label, on, extra, handler) {
 }
 
 function renderSigbar () {
-  if (!$('sigbar')) return
+  var tabs = $('sig-tabs')
+  if (!tabs) return
   var ids = identityList()
   var from = $('c-from')
-  if (from.options.length !== ids.length) {
+  if (from && from.options.length !== ids.length) {
     from.innerHTML = ''
     for (var i = 0; i < ids.length; i++) {
       var option = document.createElement('option')
@@ -3896,14 +3975,14 @@ function renderSigbar () {
     for (var r = 0; r < ids.length; r++) if (ids[r].id === remembered) from.value = ids[r].id
   }
   var identity = currentIdentity()
+  if ($('sig-note')) $('sig-note').textContent = identity ? (identity.email || identity.name) : '没有可用账号'
 
-  var tabs = $('sig-tabs')
   tabs.innerHTML = ''
   for (var t = 0; t < ids.length; t++) {
     tabs.appendChild(sigChip(ids[t].email || ids[t].name, identity && identity.id === ids[t].id, '',
       (function (id) {
         return function () {
-          $('c-from').value = id
+          if ($('c-from')) $('c-from').value = id
           try { localStorage.setItem('dsh-tb-from', id) } catch (error) { /* ignore */ }
           renderSigbar()
           applySelectedSignature()
@@ -3933,25 +4012,31 @@ function renderSigbar () {
           saveSigs(got.store)
           renderSigbar()
           applySelectedSignature()
+          renderComposeSigNote()
         }
       })(options[o])))
   }
 }
 
-// The composer is a textarea, so HTML cannot be SHOWN inside it — but it can be
-// shown beside it, and that is what makes the signature match what actually goes
-// out. The body therefore never holds the signature: it is appended as HTML at
-// send time, in its original form.
-function sigPreviewEl () {
-  var el = document.getElementById('sig-preview')
-  if (el) return el
-  el = document.createElement('div')
-  el.id = 'sig-preview'
-  el.style.cssText = 'border:1px solid var(--tb-glass-line);border-radius:12px;padding:10px 12px;'
-    + 'max-height:220px;overflow:auto;background:color-mix(in srgb, var(--tb-bg) 70%, transparent)'
-  var body = $('c-body')
-  if (body && body.parentElement) body.parentElement.insertBefore(el, body.nextSibling)
-  return el
+// The composer only NAME the signature that is in force — the editor lives in its
+// own window, so nothing here may grow into a second copy of it.
+function renderComposeSigNote () {
+  var note = $('c-sig-note')
+  if (!note) return
+  var option = activeSigOption()
+  note.textContent = option
+    ? (option.readonly ? '签名：Thunderbird 自带' : '签名：' + (option.name || '签名'))
+    : '没有签名 · 通过 Thunderbird 的身份发送'
+}
+
+// The signature editor is a contenteditable, so what is stored IS what is sent:
+// bold, colour, links, tables and <img> all survive, and the read-only
+// Thunderbird signature can be copied in and then edited as real HTML.
+function setSigEditor (html) {
+  var editor = $('sig-text')
+  if (!editor) return
+  editor.innerHTML = html || ''
+  rewriteLocalImages(editor)
 }
 
 function escapeHtml (value) {
@@ -3990,72 +4075,114 @@ function applySelectedSignature () {
   var stale = editor.querySelector('[data-dsh-sig]')
   if (stale) stale.remove()
   state.composeSigHtml = ''
-  if (!option) return
+  if (!option) { renderComposeSigNote(); return }
   var text = String(option.text || '')
   var isHtml = option.html || /<[a-z][\s\S]*?>/i.test(text)
   // Two blank lines, then a rule, then the block, and nothing after the rule —
   // one blank line read as part of the body rather than as the end of it.
   var lead = '<div><br></div><div><br></div><hr style="border:0;border-top:1px solid #9aa0a6;margin:10px 0">'
+  var sent
+  if (isHtml) {
+    sent = lead + sanitize(text)
+  } else {
+    // Plain text still has to survive the trip, so it goes out as blocks — the
+    // composer shows the same markup, and one of the two is not a lossy copy.
+    sent = lead + String(text).split(/\n{2,}/).map(function (block) {
+      return '<div>' + escapeHtml(block).replace(/\n/g, '<br>') + '</div>'
+    }).join('')
+  }
   var wrap = document.createElement('div')
   wrap.setAttribute('data-dsh-sig', '1')
   wrap.style.cssText = 'margin-top:12px'
-  if (isHtml) {
-    wrap.innerHTML = lead + sanitize(text)
-  } else {
-    wrap.innerHTML = lead
-    var plain = document.createElement('div')
-    plain.style.whiteSpace = 'pre-wrap'
-    plain.textContent = text
-    wrap.appendChild(plain)
-  }
+  wrap.innerHTML = sent
   rewriteLocalImages(wrap)
   editor.appendChild(wrap)
-  state.composeSigHtml = isHtml ? '<div style="margin-top:12px">' + lead + sanitize(text) + '</div>' : ''
+  state.composeSigHtml = '<div style="margin-top:12px">' + sent + '</div>'
+  renderComposeSigNote()
 }
 
 // The composer is opened from several places, so wrap it once instead of editing
 // every call site.
 var baseStartCompose = startCompose
 startCompose = function (message) {
-  state.composeSig = ''
   baseStartCompose(message)
+  syncComposeOptional()
   renderSigbar()
   applySelectedSignature()
+  renderComposeSigNote()
 }
 
+function openSigWindow () {
+  var win = $('signatures')
+  if (!win) return
+  win.hidden = false
+  $('rules').hidden = true
+  $('sessions').hidden = true
+  renderSigbar()
+  renderComposeSigNote()
+}
+
+// The editor is HTML in, HTML out. A Thunderbird signature is opened as-is so it
+// can be edited in place; saving it always writes a COPY, so the account's own
+// signature is never silently overwritten inside Thunderbird.
 function openSigEditor (option) {
   if (!currentIdentity()) { setError('还没有可用的发件账号'); return }
+  openSigWindow()
+  var copy = option && option.readonly
   state.sigDraft = { option: option && !option.readonly ? option : null }
   $('sig-name').value = state.sigDraft.option
     ? (state.sigDraft.option.name || '')
-    : (option && option.readonly ? 'Thunderbird 签名的副本' : '')
-  $('sig-text').value = option ? sigToText(option) : ''
-  $('sig-text').hidden = false
-  $('sig-editrow').hidden = false
+    : (copy ? 'Thunderbird 签名的副本' : '')
+  if (!option) setSigEditor('')
+  else if (copy || /<[a-z][\s\S]*?>/i.test(String(option.text || ''))) setSigEditor(sanitize(String(option.text || '')))
+  else setSigEditor('<div>' + escapeHtml(String(option.text || '')).replace(/\n/g, '<br>') + '</div>')
+  $('sig-editwrap').hidden = false
   $('sig-text').focus()
+}
+
+// Reading the edited HTML back out has to undo the display-only rewrite of local
+// file:// images, or saving a signature would bake the panel's proxy URL into it.
+function sigEditorHtml () {
+  var clone = $('sig-text').cloneNode(true)
+  var images = clone.querySelectorAll('img')
+  for (var i = 0; i < images.length; i++) {
+    var src = String(images[i].getAttribute('src') || '')
+    var marker = '/api/thunderbird/local-image?path='
+    var at = src.indexOf(marker)
+    if (at < 0) continue
+    try { images[i].setAttribute('src', decodeURIComponent(src.slice(at + marker.length))) } catch (error) { /* keep */ }
+  }
+  return clone.innerHTML
+}
+
+function closeSigEditor () {
+  if ($('sig-editwrap')) $('sig-editwrap').hidden = true
+  state.sigDraft = null
 }
 
 function saveSig () {
   var identity = currentIdentity()
   if (!identity) { setError('还没有可用的发件账号'); return }
-  var text = $('sig-text').value.trim()
-  if (!text) { setError('签名内容不能为空'); return }
+  var html = sigEditorHtml().trim()
+  var text = stripHtml(html).trim()
+  var empty = !text && !/<img[\s>]/i.test(html)
+  if (empty) { setError('签名内容不能为空'); return }
   var name = $('sig-name').value.trim() || '未命名签名'
   var got = sigRecord(identity.id)
   if (state.sigDraft && state.sigDraft.option) {
     state.sigDraft.option.name = name
-    state.sigDraft.option.text = text
-    state.sigDraft.option.html = false
+    state.sigDraft.option.text = html
+    state.sigDraft.option.html = true
   } else {
-    var made = { id: 's' + Date.now().toString(36), name: name, text: text, html: false }
+    var made = { id: 's' + Date.now().toString(36), name: name, text: html, html: true }
     got.record.list.push(made)
     got.record.active = made.id
   }
   saveSigs(got.store)
-  $('sig-text').hidden = true
-  $('sig-editrow').hidden = true
+  closeSigEditor()
   renderSigbar()
   applySelectedSignature()
+  renderComposeSigNote()
   setNotice('签名已保存到 ' + (identity.email || identity.name))
 }
 
@@ -4068,8 +4195,10 @@ function deleteSig () {
   got.record.list = got.record.list.filter(function (item) { return item.id !== active.id })
   if (got.record.active === active.id) got.record.active = ''
   saveSigs(got.store)
+  closeSigEditor()
   renderSigbar()
   applySelectedSignature()
+  renderComposeSigNote()
   setNotice('签名已删除')
 }
 
@@ -4258,20 +4387,198 @@ function deleteSig () {
   }
 })()
 
+// ------------------------------------------------- 签名编辑器的富文本工具栏
+// The same shape as the composer's, but bound to the signature editor and WITHOUT
+// the size/line-height selects: a signature is a fixed block, and letting one be
+// re-sized per selection was how a signature drifts out of shape over time.
+;(function () {
+  var bar = $('sig-toolbar')
+  var editor = $('sig-text')
+  if (!bar || !editor) return
+
+  function saveSel () {
+    var sel = window.getSelection ? window.getSelection() : null
+    if (!sel || sel.rangeCount === 0) return
+    var node = sel.anchorNode
+    if (node && (node === editor || editor.contains(node))) state.sigRange = sel.getRangeAt(0).cloneRange()
+  }
+  function restoreSel () {
+    var range = state.sigRange
+    var sel = window.getSelection ? window.getSelection() : null
+    if (!range || !sel) return
+    try { sel.removeAllRanges(); sel.addRange(range) } catch (error) { /* detached */ }
+  }
+  editor.addEventListener('keyup', saveSel)
+  editor.addEventListener('mouseup', saveSel)
+  editor.addEventListener('blur', saveSel)
+
+  bar.addEventListener('mousedown', function (event) {
+    var target = event.target && event.target.closest ? event.target.closest('[data-cmd]') : null
+    if (!target) return
+    event.preventDefault()
+    restoreSel()
+    try {
+      document.execCommand('styleWithCSS', false, true)
+      document.execCommand(target.getAttribute('data-cmd'), false, target.getAttribute('data-arg') || null)
+    } catch (error) { /* not every build supports every command */ }
+    editor.focus()
+    saveSel()
+  })
+
+  function paint (command, value) {
+    restoreSel()
+    try {
+      document.execCommand('styleWithCSS', false, true)
+      document.execCommand(command, false, value)
+    } catch (error) { /* unsupported */ }
+    editor.focus()
+    saveSel()
+  }
+
+  // Reuse the composer's swatch popover markup so both palettes stay identical.
+  var pop = document.createElement('div')
+  pop.className = 'rtpop'
+  pop.hidden = true
+  document.body.appendChild(pop)
+
+  var SIG_BASES = ['#000000', '#7f7f7f', '#c0392b', '#e36c0a', '#bfa100', '#2e7d32', '#00838f', '#1565c0', '#4527a0', '#ad1457']
+  var SIG_BG = ['#ffffff', '#f1f3f4', '#fde2e4', '#ffe58f', '#d7f0d7', '#dbeafe', '#ede9fe', '#fce7f3']
+  function tint (hex, ratio) {
+    var n = parseInt(hex.slice(1), 16)
+    var parts = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+    return '#' + parts.map(function (c) {
+      var v = Math.round(c + (255 - c) * ratio)
+      return ('0' + v.toString(16)).slice(-2)
+    }).join('')
+  }
+
+  function openSwatches (which, anchor) {
+    pop.innerHTML = ''
+    var command = which === 'fg' ? 'foreColor' : 'hiliteColor'
+    var colors = []
+    if (which === 'fg') {
+      for (var row = 0; row < 5; row++) {
+        for (var col = 0; col < SIG_BASES.length; col++) colors.push(tint(SIG_BASES[col], row * 0.2))
+      }
+    } else {
+      colors = SIG_BG
+    }
+    for (var i = 0; i < colors.length; i++) {
+      (function (color) {
+        var sw = document.createElement('button')
+        sw.type = 'button'
+        sw.className = 'rtswatch'
+        sw.style.background = color
+        sw.title = color
+        sw.onmousedown = function (event) { event.preventDefault(); paint(command, color); pop.hidden = true }
+        pop.appendChild(sw)
+      })(colors[i])
+    }
+    var custom = document.createElement('input')
+    custom.type = 'color'
+    custom.className = 'rtcustom'
+    custom.title = '自定义颜色（取色器）'
+    custom.oninput = function () { paint(command, custom.value) }
+    pop.appendChild(custom)
+    var rect = anchor.getBoundingClientRect()
+    pop.style.left = Math.max(8, Math.min(Math.round(rect.left), window.innerWidth - 300)) + 'px'
+    pop.style.top = Math.round(rect.bottom + 6) + 'px'
+    pop.hidden = false
+  }
+  $('sig-fg-btn').onmousedown = function (event) { event.preventDefault(); openSwatches('fg', this) }
+  $('sig-bg-btn').onmousedown = function (event) { event.preventDefault(); openSwatches('bg', this) }
+  document.addEventListener('click', function (event) {
+    if (pop.hidden) return
+    if (pop.contains(event.target)) return
+    if (event.target.id === 'sig-fg-btn' || event.target.id === 'sig-bg-btn') return
+    pop.hidden = true
+  })
+
+  // A picked file becomes a data: URL, so the signature carries the image inside
+  // itself and no path on this machine has to exist for the mail to look right.
+  var picker = document.createElement('input')
+  picker.type = 'file'
+  picker.accept = 'image/*'
+  picker.hidden = true
+  document.body.appendChild(picker)
+  picker.onchange = function () {
+    var file = picker.files && picker.files[0]
+    picker.value = ''
+    if (!file) return
+    if (file.size > 3 * 1024 * 1024) { setError('图片超过 3 MB，签名里不合适'); return }
+    var reader = new FileReader()
+    reader.onload = function () {
+      restoreSel()
+      try {
+        document.execCommand('insertHTML', false, '<img src="' + String(reader.result) + '" style="max-width:100%">')
+      } catch (error) {
+        var img = document.createElement('img')
+        img.src = String(reader.result)
+        img.style.maxWidth = '100%'
+        editor.appendChild(img)
+      }
+      editor.focus()
+    }
+    reader.readAsDataURL(file)
+  }
+  $('sig-img-btn').onmousedown = function (event) { event.preventDefault(); picker.click() }
+
+  // Source view: what an HTML signature actually is. Without it a signature that
+  // arrives broken cannot be repaired from the panel at all.
+  $('sig-html-btn').onmousedown = function (event) {
+    event.preventDefault()
+    var html = sigEditorHtml()
+    var source = document.getElementById('sig-source')
+    if (!source) {
+      source = document.createElement('textarea')
+      source.id = 'sig-source'
+      source.className = 'textarea sigedit'
+      source.spellcheck = false
+      // A freshly created element has hidden === false, so it MUST be set here:
+      // the branch below reads this flag, and without it the first click took the
+      // "back to rich view" path and wiped the editor it was meant to open.
+      source.hidden = true
+      editor.parentNode.insertBefore(source, editor.nextSibling)
+    }
+    if (source.hidden) {
+      source.value = html
+      source.hidden = false
+      editor.hidden = true
+      source.focus()
+    } else {
+      // Back to the rich view: whatever was typed in the source wins.
+      setSigEditor(sanitize(source.value))
+      source.hidden = true
+      editor.hidden = false
+      editor.focus()
+    }
+  }
+})()
+
+$('add-cc').onclick = function () { composeField('cc', true, true) }
+$('add-subject').onclick = function () { composeField('subject', true, true) }
+// Once opened, a field stays open for the rest of this compose session. Folding
+// it again on blur looked tidy but collapsed BOTH fields the moment the second
+// one took focus — the blur fired inside the focus() that the click had just
+// performed, and re-ran the sweep the click was still halfway through.
+syncComposeMore()
 $('btn-compose').onclick = function () { startCompose(null) }
 $('c-from').onchange = function () {
   try { localStorage.setItem('dsh-tb-from', $('c-from').value) } catch (error) { /* ignore */ }
   renderSigbar()
   applySelectedSignature()
+  renderComposeSigNote()
 }
+$('btn-signatures').onclick = function () {
+  if ($('signatures').hidden) openSigWindow(); else $('signatures').hidden = true
+}
+$('btn-sig-pick').onclick = function () { openSigWindow() }
+$('sig-close').onclick = function () { $('signatures').hidden = true }
 $('sig-new').onclick = function () { openSigEditor(null) }
 $('sig-edit').onclick = function () { openSigEditor(activeSigOption()) }
 $('sig-del').onclick = function () { deleteSig() }
 $('sig-save').onclick = function () { saveSig() }
-$('sig-cancel').onclick = function () {
-  $('sig-text').hidden = true
-  $('sig-editrow').hidden = true
-}
+$('sig-cancel').onclick = function () { closeSigEditor() }
 
 $('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
 // The toolbar's own style lives here rather than in the sheet because it is one
@@ -4392,6 +4699,7 @@ $('ai-new').onclick = function () {
   startCompose(null)
   $('c-subject').value = subject
   $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
+  syncComposeOptional()
   setNotice('已填入新邮件，填好收件人后发送')
 }
 $('ai-lang').onchange = function () { setNotice('翻译目标语言：' + this.value) }
