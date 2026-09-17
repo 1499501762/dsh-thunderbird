@@ -17,6 +17,20 @@ let config = Object.assign({}, DEFAULTS)
 let online = false
 let inFlight = 0
 
+// In-memory breadcrumbs. The polling loop must never depend on storage being
+// healthy, so this stays a plain object and is only reported on request.
+const diag = {
+  bootedAt: Date.now(),
+  polls: 0,
+  commands: 0,
+  lastPollAt: 0,
+  lastOkAt: 0,
+  lastError: '',
+  lastErrorAt: 0,
+  storageOk: null,
+  transport: '',
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const box = (v) => (v == null ? '' : String(v))
 
@@ -364,6 +378,12 @@ methods['debug.api'] = async () => {
     tags: keysOf(api.messages && api.messages.tags),
     windows: keysOf(api.windows),
     granted,
+    diag: Object.assign({}, diag, {
+      online,
+      inFlight,
+      config: Object.assign({}, config),
+      now: Date.now(),
+    }),
   }
 }
 
@@ -520,13 +540,48 @@ async function fetchWithTimeout (url, options, timeoutMs) {
   }
 }
 
+// XMLHttpRequest is the transport MailExtensions have supported the longest, so
+// it is kept as a fallback for builds where fetch() is unavailable or blocked.
+function xhrRequest (method, url, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open(method, url, true)
+    xhr.timeout = timeoutMs
+    if (body != null) xhr.setRequestHeader('content-type', 'application/json')
+    xhr.onload = () => resolve({ status: xhr.status, text: xhr.responseText })
+    xhr.onerror = () => reject(new Error('XMLHttpRequest network error'))
+    xhr.ontimeout = () => reject(new Error('XMLHttpRequest timeout'))
+    xhr.onabort = () => reject(new Error('XMLHttpRequest aborted'))
+    try {
+      xhr.send(body == null ? null : JSON.stringify(body))
+    } catch (error) {
+      reject(error)
+    }
+  })
+}
+
+async function httpRequest (method, url, body, timeoutMs) {
+  let fetchError = null
+  try {
+    const res = await fetchWithTimeout(url, {
+      method,
+      headers: body == null ? undefined : { 'content-type': 'application/json' },
+      body: body == null ? undefined : JSON.stringify(body),
+    }, timeoutMs)
+    diag.transport = 'fetch'
+    return { status: res.status, text: await res.text() }
+  } catch (error) {
+    fetchError = error
+  }
+  if (typeof XMLHttpRequest === 'undefined') throw fetchError
+  const res = await xhrRequest(method, url, body, timeoutMs)
+  diag.transport = 'xhr'
+  return res
+}
+
 async function postJson (path, payload) {
-  const res = await fetchWithTimeout(config.baseUrl + path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  }, 20000)
-  if (!res.ok) throw new Error('HTTP ' + res.status)
+  const res = await httpRequest('POST', config.baseUrl + path, payload, 20000)
+  if (res.status < 200 || res.status >= 300) throw new Error('HTTP ' + res.status)
   return res
 }
 
@@ -544,11 +599,15 @@ async function loop () {
   while (true) {
     try {
       const url = config.baseUrl + '/api/thunderbird/poll?wait=' + config.pollWaitMs + '&client=thunderbird'
-      const res = await fetchWithTimeout(url, {}, Number(config.pollWaitMs) + 15000)
-      if (!res.ok) throw new Error('HTTP ' + res.status)
-      const data = await res.json()
+      const res = await httpRequest('GET', url, null, Number(config.pollWaitMs) + 15000)
+      if (res.status < 200 || res.status >= 300) throw new Error('HTTP ' + res.status)
+      const data = JSON.parse(res.text)
+      diag.polls += 1
+      diag.lastPollAt = Date.now()
+      diag.lastOkAt = diag.lastPollAt
       setStatus(true)
       const commands = (data && data.commands) || []
+      diag.commands += commands.length
       // Dispatch concurrently: decoding one large message over IMAP must not
       // block the status/list calls queued behind it.
       for (let i = 0; i < commands.length; i++) {
@@ -561,6 +620,8 @@ async function loop () {
       }
       while (inFlight > 6) await sleep(50)
     } catch (e) {
+      diag.lastError = String((e && e.message) || e)
+      diag.lastErrorAt = Date.now()
       setStatus(false)
       await sleep(config.retryMs)
     }
@@ -587,11 +648,27 @@ function wireEvents () {
   } catch (e) { /* event is optional */ }
 }
 
-async function main () {
+// Storage is a *convenience* here: a hung or half-migrated storage backend must
+// never be able to keep the bridge off the wire, so the read is time-boxed and
+// the poll loop is started first.
+async function loadConfig () {
   try {
-    config = Object.assign({}, DEFAULTS, await api.storage.local.get(DEFAULTS))
+    const stored = await Promise.race([
+      api.storage.local.get(DEFAULTS),
+      sleep(4000).then(() => null),
+    ])
+    if (stored) {
+      config = Object.assign({}, DEFAULTS, stored)
+      diag.storageOk = true
+    } else {
+      diag.storageOk = false
+      diag.lastError = 'storage.local.get timed out; using defaults'
+      diag.lastErrorAt = Date.now()
+    }
   } catch (e) {
-    config = Object.assign({}, DEFAULTS)
+    diag.storageOk = false
+    diag.lastError = 'storage.local.get failed: ' + String((e && e.message) || e)
+    diag.lastErrorAt = Date.now()
   }
   try {
     api.storage.onChanged.addListener((changes, area) => {
@@ -603,8 +680,19 @@ async function main () {
       }
     })
   } catch (e) { /* storage listener is optional */ }
+}
+
+function main () {
   wireEvents()
   setStatus(false)
+  loadConfig()
+  // Heartbeat so DSH can tell "add-on never started" from "add-on started but
+  // cannot reach DSH"; it also flips the host to online immediately.
+  pushEvent('bridge/start', {
+    version: api.runtime.getManifest().version,
+    baseUrl: config.baseUrl,
+    bootedAt: diag.bootedAt,
+  })
   loop()
 }
 

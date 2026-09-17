@@ -3,7 +3,7 @@
   "name": "DSH Thunderbird Bridge",
   "version": "1.0.0",
   "description": "Exposes Thunderbird mail APIs to the DSH sidebar over a loopback HTTP bridge.",
-  "applications": {
+  "browser_specific_settings": {
     "gecko": {
       "id": "dsh-thunderbird-bridge@dsh.local",
       "strict_min_version": "115.0"

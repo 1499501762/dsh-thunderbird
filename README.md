@@ -4,8 +4,9 @@
 
 | 部分 | 位置 | 作用 |
 | --- | --- | --- |
-| **Thunderbird 插件**（MailExtension） | `thunderbird-addon/` | 把 Thunderbird 的邮件/文件夹/发送 API 暴露出去 |
-| **DSH 插件**（Cordis，host-only） | `dsh-side/thunderbird-host.mjs` | 桥端点 + 面板 HTML + AI 动作 |
+| **Thunderbird 插件**（MailExtension，MV2） | `thunderbird-addon/` | 把 Thunderbird 的邮件/文件夹/发送 API 暴露出去 |
+| **DSH 插件**（Cordis host + client 两半） | `dsh-side/thunderbird-host.mjs`、`panel-client.js` | 桥端点 + 侧边栏入口 + 面板宿主 + AI 动作 |
+| **面板 UI** | `dsh-side/ui.html` | 单文件，无依赖，三栏可拖拽 |
 
 已在真实环境跑通：Thunderbird（IMAP 三账号）↔ DSH 侧边栏面板 ↔ `deepseek-flash`。
 
@@ -92,46 +93,60 @@ Thunderbird 的 WebExtension API **不暴露原生过滤器**（没有 `messenge
 
 ## 安装
 
-### 1. DSH 侧
+### 1. DSH 侧（常驻插件包）
 
-插件以**动态 Cordis Plugin** 形式运行，host-only，**无需授权**：
+这个目录本身就是 DSH 的插件包：`package.json` 里 `main` 指向 host 半边、
+`dsh.bundle.patch` 指向 `cordis.patch.yml`。把它接进 `web` profile 即可：
 
+```powershell
+powershell -File .\persistent-install.ps1            # 幂等
+powershell -File .\persistent-install.ps1 -Rollback  # 撤销
 ```
-pluginId: tbmail-1   （桥 + 面板 + AI）
-```
 
-面板不在侧边栏注册自定义标签，而是直接开一个页签指向 `/api/thunderbird/ui`
-（用 DSH 自带的 sidebar 浏览器打开即可，`sidebar_open` 工具也能开）。
+它只改两处：`profiles/web/package.json` 的 `dependencies`（`link:` 指向本目录）和
+`dsh.profile.bundles`，再补一个 `node_modules` junction。**重启 DSH 生效。**
 
-⚠️ **动态插件是会话级的**：DSH 会话重置后它会消失（进程本身不重启也会）。
-恢复方式：重新定义并运行同一个 Package（源码在 `dsh-side/thunderbird-host.mjs`）。
-
-⚠️ **不要手写 `profiles/web/cordis.patch.yml` 来"持久化"**：我试过加一条 `insert`
-行指向本地模块，结果把 DSH 启动打挂了（`DeepSeek request extension preparation failed`）。
-已回滚，备份在 `cordis.patch.yml.bak-before-thunderbird`。要真正常驻，应当走 DSH
-自己的插件打包/装载流程，而不是往 composition 里塞行。
+⚠️ **不要手写 `profiles/web/cordis.patch.yml` 来"持久化"**：往 composition 里塞一条
+指向本地模块的 `insert` 行会把 DSH 启动打挂（`DeepSeek request extension preparation failed`）。
+正确做法是让包自带 patch（`dsh.bundle.patch`），由加载器去应用。
 
 ### 2. Thunderbird 侧
 
 ```powershell
-powershell -File .\install-addon.ps1                 # 自动定位正在使用的配置
+powershell -File .\install-addon.ps1                  # 自动定位正在使用的配置
 powershell -File .\install-addon.ps1 -ProfilePath X   # 指定配置
-powershell -File .\install-addon.ps1 -Uninstall
 ```
 
-脚本会：定位配置目录（按 `installs.ini` 找**实际在用**的那个）→ 拷进
-`<profile>/extensions/dsh-thunderbird-bridge@dsh.local/` → 往 `user.js` 写两条偏好：
+真正的活在 `dev/install-extension.py` 里：用 Python 打出 `.xpi`，然后**通过 Marionette
+把 XPI 交给 `AddonManager.getInstallForFile()`**。装完是一个正常的 profile 扩展
+（`location: app-profile`、`foreignInstall: false`），重启 Thunderbird 后自动起来。
+
+**为什么不能直接往 `<profile>\extensions\` 里丢 XPI**（这是这次最贵的一个坑）：
+
+- 现代 Gecko **不再扫描**那个目录，文件会在下一次启动时**被删掉**；
+- 看起来"装上了"（`extensions.json` 里短暂出现过条目、`active: true`），
+  但后台页面根本没跑，桥一直是 offline —— 排查方向会被彻底带偏。
+
+Thunderbird 自带 Marionette，所以可以零点击安装：
+
+```powershell
+# 关键：-remote-allow-system-access，否则 Marionette:SetContext 报 System access is required
+thunderbird.exe -marionette -remote-allow-system-access
+AddonManager.getInstallForFile(xpi) -> install.install()
+```
+
+未签名能装，因为 Thunderbird 的 `xpinstall.signatures.required` **默认就是 false**
+（不像 Firefox release 会忽略这个偏好）。装出来的 `signedState: 0`（未签名）、
+`isActive: true`。
+
+`user.js` 里仍建议保留：
 
 ```
-user_pref("xpinstall.signatures.required", false);   // 允许未签名扩展
-user_pref("extensions.autoDisableScopes", 0);        // 不要自动禁用侧载扩展
+user_pref("extensions.autoDisableScopes", 0);   // 不要自动禁用侧载扩展
 ```
 
-**必须完全退出并重启 Thunderbird** 才会加载；装好后 `curl http://127.0.0.1:43129/api/thunderbird/status`
-应显示 `"online": true, "client": "thunderbird"`。
-
-不想改偏好也可以零改动试用：设置 → 附加组件 → 调试附加组件 → 临时载入
-`thunderbird-addon/manifest.json`（重启后失效）。
+零改动试用（重启后失效）：设置 → 附加组件 → 调试附加组件 → 临时载入
+`thunderbird-addon/manifest.json`。
 
 ### 3. 没有 Thunderbird 时验证链路
 
@@ -160,6 +175,12 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
 
 ## 真实 Thunderbird 上踩到的坑（都已处理）
 
+- **manifest 里出现 `browser_action` 会让整份 manifest 校验失败**，`getInstallForFile()`
+  只报一个 `-3`（`ERROR_CORRUPT_FILE`），而 `nsIZipReader` 明明能列出全部条目 ——
+  看起来像压缩包坏了，其实是清单不合法。Thunderbird 没有 Firefox 那条 action 工具栏，
+  想要状态指示就用 `message_display_action` / `compose_action`，或者干脆不做。
+  `dev/probe-manifest.py` 就是为定位这个坑写的：它拿几份最小 manifest 往
+  AddonManager 里灌，一次分清是「包坏了」「MV2 不行」还是「某个 key 不认」。
 - **`MessageId` 是整数**，不是字符串。早期用 `String()` 包装导致
   `messages.getFull/update/delete/move` 全部报 `Incorrect argument types`。
   现在 `toMessageId()` 只在纯数字字符串时转数字，其余原样透传。
@@ -167,12 +188,19 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
   手工用旧 id 调试会打到完全不同的邮件上。
 - **正文要用 `listInlineTextParts`**（TB 128+），`getFull({decodeContent:true})` 只作兜底。
 - **大邮件要手动载入**：正文解码需要先把整封邮件从服务器拉下来，几百 KB 的邮件可能耗时数十秒
-  甚至失败（Thunderbird 侧报 `Error reading message N`）。面板对 > 150 KB 的邮件改为
+  甚至失败（Thunderbird 侧报 `Error reading message N`）。面板对 > 1.5 MB 的邮件改为
   「载入正文」按钮，插件侧对 > 8 MB 直接跳过。
 - **命令并发下发**：早期串行执行，一封大邮件会把后面的状态查询全堵住。现在并发派发，最多 6 条在飞。
 - **附件与转发邮件**：有些邮件（`message/rfc822` 套 PDF）本来就没有正文。面板会列出附件，
   并提供「在 Thunderbird 中打开」（`messageDisplay.open`）作为出口。
 - **列表排序**：请求 `sortType:'date', sortOrder:'descending'`（TB 148+），并在客户端再兜底排一次。
+- **存储不能挡住轮询**：早期 `main()` 先 `await storage.local.get()` 再进循环，
+  存储后端一旦卡住（临时载入 → profile 安装的迁移过程里出现过），桥就永远不上线而且**不报错**。
+  现在先起 `loop()`，配置读取带 4 秒超时，任何失败都退化成默认值。
+- **fetch 有 XHR 兜底**：后台页面优先用 `fetch`，失败自动改走 `XMLHttpRequest`
+  （MailExtension 里支持最久的传输方式），当前实际走的是 `fetch`（`debug.api` 的 `diag.transport`）。
+- **心跳**：后台页面启动时立刻发一个 `bridge/start` 事件，DSH 端只凭它就能区分
+  「插件没起来」和「插件起来了但连不上」。
 
 ## 面板顶部与 DSH 桌面版标题栏
 
@@ -204,6 +232,15 @@ node .\dev\inspect-addons.js 'dsh-thunderbird-bridge@dsh.local' "$env:APPDATA\Th
 
 输出 `active / userDisabled / appDisabled / signedState / installedDir`，用来区分「没加载」和「加载了但连不上」。
 
+插件自己也会报状态，比翻 JSON 直观：
+
+```powershell
+curl "http://127.0.0.1:43129/api/thunderbird/rpc?method=debug.api"
+```
+
+`result.diag` 里是后台页面的自述：`transport`（fetch 还是 xhr）、`polls`、`storageOk`、
+`lastError`、`config.baseUrl`、`bootedAt`。桥 offline 时先看这里，再看 `status`。
+
 ⚠️ 别把 `devtools.console.stdout.content` / `devtools.console.stdout.chrome` 写进 user.js 再启动
 Thunderbird：没有有效 stdout 时 Thunderbird 会直接起不来（踩过，已回退）。
 
@@ -223,26 +260,21 @@ Thunderbird：没有有效 stdout 时 Thunderbird 会直接起不来（踩过，
 ## 打包 Thunderbird 插件（.xpi）
 
 ```powershell
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-[System.IO.Compression.ZipFile]::CreateFromDirectory(
-  "$PWD\thunderbird-addon", "$PWD\dist\dsh-thunderbird-bridge-1.0.0.xpi",
-  [System.IO.Compression.CompressionLevel]::Optimal, $false)
+python .\dev\build_xpi.py
+# -> dist\dsh-thunderbird-bridge-1.0.0.xpi
 ```
 
-`Compress-Archive` 只接受 `.zip`，所以这里用 `ZipFile` API（`$false` = 目录内容放在压缩包根，不套一层）。
+用 Python 的 `zipfile` 而不是 PowerShell 的 `Compress-Archive` /
+`ZipFile::CreateFromDirectory`：后两者在 .NET Framework 上会写**反斜杠**分隔符，
+而 `nsIZipReader` 按字面理解，装的时候直接 `ERROR_CORRUPT_FILE`。
 
-安装（**正式扩展**，重启后仍在）：
-
-- **图形界面**：设置 → 附加组件和主题 → 齿轮 → 从文件安装附加组件 → 选那个 `.xpi`
-- **免界面**：把 `.xpi` 放到 `<配置目录>\extensions\dsh-thunderbird-bridge@dsh.local.xpi` 然后重启
-  Thunderbird（侧载；需要 `user.js` 里的 `xpinstall.signatures.required=false`）
-
-未签名扩展的两种加载方式对比：
+三种加载方式：
 
 | 方式 | 重启后 |
 | --- | --- |
+| 直接往 `<profile>\extensions\` 丢 `.xpi` | **文件被删掉**，现代 Gecko 不扫这个目录 |
 | 临时载入（调试附加组件） | **消失**，每次重启都要重新载入 |
-| 从文件安装 / 侧载 `.xpi` | 保留，出现在「扩展」列表里 |
+| `install-addon.ps1`（Marionette + AddonManager） | **保留**，是正常的 profile 扩展 |
 
 ## 许可
 
@@ -268,10 +300,14 @@ dsh-thunderbird/
 │  ├─ panel-client.js          Cordis client 半边（侧边栏图标 + 面板宿主）
 │  └─ ui.html                  面板 UI（单文件，无依赖）
 ├─ dev/
+│  ├─ build_xpi.py             用 zipfile 打 .xpi（正斜杠）
+│  ├─ install-extension.py     Marionette + AddonManager 零点击安装
+│  ├─ probe-manifest.py        往 AddonManager 灌最小 manifest，定位 -3 的成因
+│  ├─ marionette-eval.py       在真实 Thunderbird 里跑 JS（chrome / system 沙箱）
 │  ├─ mock-thunderbird.js      无 Thunderbird 时的协议替身
 │  └─ inspect-addons.js        查插件在配置目录里的加载状态
 ├─ docs/                       面板实拍截图（含真实邮件，已 gitignore）
-├─ install-addon.ps1           把 .xpi 装进配置目录
+├─ install-addon.ps1           调 dev/install-extension.py
 ├─ persistent-install.ps1      把本目录接成 DSH 的常驻插件
 ├─ cordis.patch.yml            DSH bundle patch
 ├─ package.json                DSH 插件包清单
