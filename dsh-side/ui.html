@@ -806,6 +806,9 @@
       <button type="button" class="rtb" data-cmd="insertOrderedList" title="编号">1.</button>
       <button type="button" class="rtb" data-cmd="formatBlock" data-arg="blockquote" title="引用">❝</button>
       <button type="button" class="rtb" data-cmd="removeFormat" title="清除格式">清</button>
+      <span class="rtsep"></span>
+      <label class="rtcolor" title="文字颜色"><input type="color" id="rt-fg" value="#c0392b"></label>
+      <label class="rtcolor" title="文字背景色"><input type="color" id="rt-bg" value="#ffe58f"></label>
     </div>
     <div class="textarea richbody" id="c-body" contenteditable="true" data-placeholder="正文（支持 HTML，可以直接粘贴排版）"></div>
     <div class="sigbar">
@@ -1470,10 +1473,21 @@ function renderReader () {
       loading.appendChild(document.createElement('br'))
       loading.appendChild(retry)
     } else {
-      loading.textContent = '正在载入邮件正文…（大邮件需要先从服务器下载，可能较慢）'
+      // An ESTIMATE bar, and it says so. Thunderbird's WebExtension API exposes no
+      // byte progress for an IMAP fetch (no stream, no callback), so the only
+      // honest option is to model the wait from the message size: advance toward
+      // 90% and hold there until the real answer arrives. It never claims to have
+      // finished, because it cannot know.
+      loading.textContent = '正在载入邮件正文…（大邮件需要先从服务器下载）'
+      var bytes = (state.current && state.current.size) || 0
+      var expectedMs = Math.min(Math.max(bytes / 120000, 3), 25) * 1000
+      var startedAt = Date.now()
       var bar = document.createElement('div')
       bar.className = 'progress'
-      bar.appendChild(document.createElement('i'))
+      var fill = document.createElement('i')
+      fill.style.animation = 'none'
+      fill.style.width = '2%'
+      bar.appendChild(fill)
       loading.appendChild(bar)
       var elapsed = document.createElement('div')
       elapsed.className = 'meta'
@@ -1481,6 +1495,15 @@ function renderReader () {
       elapsed.textContent = '已等待 0 秒'
       loading.appendChild(elapsed)
       state.bodyElapsedEl = elapsed
+      if (state.bodyTimer) clearInterval(state.bodyTimer)
+      state.bodyTimer = setInterval(function () {
+        var ratio = Math.min((Date.now() - startedAt) / expectedMs, 1)
+        fill.style.width = (2 + ratio * 88).toFixed(1) + '%'
+        var secs = Math.round((Date.now() - startedAt) / 1000)
+        elapsed.textContent = '已等待 ' + secs + ' 秒 · 按 ' + fmtSize(bytes) + ' 估算约 '
+          + Math.round(expectedMs / 1000) + ' 秒' + (ratio >= 1 ? '（已超出估算，仍在传输）' : '')
+        if (ratio >= 1) { clearInterval(state.bodyTimer); state.bodyTimer = null }
+      }, 250)
     }
     host.appendChild(loading)
     return
@@ -1979,6 +2002,7 @@ function loadBody (messageId) {
   }, 1000)
   // Decoding a large message over IMAP downloads it first, so allow real time.
   call('messages.body', { messageId: messageId }, 90000).then(function (content) {
+    if (state.bodyTimer) { clearInterval(state.bodyTimer); state.bodyTimer = null }
     state.body = content
     cacheBody(messageId, content)
     state.inlineImages = null
@@ -1990,6 +2014,7 @@ function loadBody (messageId) {
     render()
     resetReaderScroll()
   }).catch(function (error) {
+    if (state.bodyTimer) { clearInterval(state.bodyTimer); state.bodyTimer = null }
     state.bodyError = String((error && error.message) || error)
     render()
     resetReaderScroll()
@@ -3950,10 +3975,9 @@ function applySelectedSignature () {
   if (!option) return
   var text = String(option.text || '')
   var isHtml = option.html || /<[a-z][\s\S]*?>/i.test(text)
-  // A signature is set off the way a mail client does it: a blank line, then a
-  // rule, then the block — and NOTHING after the rule, which otherwise left a
-  // visible gap between the line and the signature it introduces.
-  var lead = '<div><br></div><hr style="border:0;border-top:1px solid #9aa0a6;margin:10px 0">'
+  // Two blank lines, then a rule, then the block, and nothing after the rule —
+  // one blank line read as part of the body rather than as the end of it.
+  var lead = '<div><br></div><div><br></div><hr style="border:0;border-top:1px solid #9aa0a6;margin:10px 0">'
   var wrap = document.createElement('div')
   wrap.setAttribute('data-dsh-sig', '1')
   wrap.style.cssText = 'margin-top:12px'
@@ -4046,17 +4070,53 @@ function deleteSig () {
     + '.rtselect{height:26px;border:1px solid var(--tb-border);border-radius:7px;background:color-mix(in srgb, var(--tb-bg) 76%, transparent);'
     + 'color:var(--tb-text-dim);font:inherit;font-size:12px;padding:0 4px}'
     + '.rtsep{width:1px;height:18px;background:var(--tb-border);margin:0 3px}'
+    + '.rtcolor{display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 5px;border:1px solid var(--tb-border);border-radius:7px;cursor:pointer}'
+    + '.rtcolor:hover{border-color:var(--tb-border-strong);background:var(--tb-hover)}'
+    + '.rtcolor input[type=color]{width:20px;height:18px;padding:0;border:0;background:transparent;cursor:pointer}'
   document.head.appendChild(style)
 
   bar.addEventListener('mousedown', function (event) {
     var target = event.target && event.target.closest ? event.target.closest('[data-cmd]') : null
     if (!target) return
     event.preventDefault()
+    restoreSel()
     try {
       document.execCommand(target.getAttribute('data-cmd'), false, target.getAttribute('data-arg') || null)
     } catch (error) { /* not every build supports every command */ }
     $('c-body').focus()
   })
+
+  // A colour input takes focus when it opens, which throws the selection away —
+  // so the range is remembered as it is made and put back before any command runs.
+  function saveSel () {
+    var sel = window.getSelection ? window.getSelection() : null
+    if (!sel || sel.rangeCount === 0) return
+    var node = sel.anchorNode
+    if (node && $('c-body').contains(node)) state.rtRange = sel.getRangeAt(0).cloneRange()
+  }
+  function restoreSel () {
+    var range = state.rtRange
+    var sel = window.getSelection ? window.getSelection() : null
+    if (!range || !sel) return
+    try { sel.removeAllRanges(); sel.addRange(range) } catch (error) { /* detached */ }
+  }
+  $('c-body').addEventListener('keyup', saveSel)
+  $('c-body').addEventListener('mouseup', saveSel)
+
+  // styleWithCSS makes execCommand emit real CSS (background-color) instead of
+  // the ancient <font> tag, which is the difference between a colour that
+  // survives a paste into another client and one that does not.
+  function colored (command, value) {
+    restoreSel()
+    try {
+      document.execCommand('styleWithCSS', false, true)
+      document.execCommand(command, false, value)
+    } catch (error) { /* unsupported */ }
+    $('c-body').focus()
+    saveSel()
+  }
+  $('rt-fg').oninput = function () { colored('foreColor', this.value) }
+  $('rt-bg').oninput = function () { colored('hiliteColor', this.value) }
 
   function currentBlock () {
     var sel = window.getSelection ? window.getSelection() : null
