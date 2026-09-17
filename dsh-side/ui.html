@@ -66,7 +66,22 @@
      pointer events for its full width, and an iframe cannot opt out with
      no-drag. So the bar's surface is painted from y=0 (no visual gap) while its
      controls start below the strip. The strip's own height is auto-detected. */
-  .bar { padding-top: var(--tb-inset-top, 0px); padding-right: calc(14px + var(--tb-inset-right, 0px)); }
+  /* The window title bar owns the top strip (--tb-inset-top), and the frame does
+     not reach into it. When a strip IS reserved, the identity chips are drawn
+     inside it and read as part of the title row; when there is none, the strip
+     falls back to a normal row so the chips can never vanish — a zero-height
+     strip silently ate them. */
+  .tb-strip {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: max(var(--tb-inset-top, 0px), 30px);
+    padding: 0 calc(14px + var(--tb-inset-right, 0px)) 0 14px;
+    overflow: hidden;
+    background: var(--tb-bg-1);
+  }
+  .bar { padding-top: 0; padding-right: calc(14px + var(--tb-inset-right, 0px)); }
   .split { width: 7px; flex: none; cursor: col-resize; position: relative; }
   .split::before { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--tb-border); transition: background .12s; }
   .split:hover::before, .split.dragging::before { background: var(--tb-accent); }
@@ -337,7 +352,10 @@
   .sep-v { width: 1px; align-self: stretch; min-height: 18px; background: var(--tb-border); margin: 0 4px; }
   .ai { box-shadow: 0 -8px 22px rgba(0,0,0,.10); }
   .ai-head { padding: 10px 16px 8px; }
-  .ai-badge { background: var(--tb-accent); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .8px; padding: 2px 7px; border-radius: 6px; }
+  /* NOT `#fff`: DSH's dark theme reports a near-WHITE brand-primary, so white
+     text on the accent pill is white on white. --tb-accent-fg is derived from the
+     accent's own luminance and already existed for the primary button. */
+  .ai-badge { background: var(--tb-accent); color: var(--tb-accent-fg); font-size: 10px; font-weight: 700; letter-spacing: .8px; padding: 2px 7px; border-radius: 6px; }
   .ai-model { font-family: ui-monospace, Consolas, monospace; }
   .ai-body { padding: 6px 16px 16px; font-size: 13px; }
   .ai-lang { background: var(--tb-bg); color: inherit; border: 1px solid var(--tb-border); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; }
@@ -693,13 +711,10 @@
     -webkit-backdrop-filter: var(--tb-glass-blur);
   }
   html.ai-view #ai-empty { padding: 8px 2px; }
-  /* 「填入回复 / 填入新邮件」 write into the composer, which lives in the PANEL —
-     in this frame they would write into elements that are not there and appear to
-     do nothing, so they stay off. 「替换选中」 is relayed back to the panel over
-     the AI channel instead, so the one insert that makes sense from a tab works.
-     「关闭」 closes the floating overlay; as a tab the container IS the tab. */
-  html.ai-view #ai-reply,
-  html.ai-view #ai-new,
+  /* These write into the panel's composer, which is in ANOTHER frame, so they are
+     relayed over the AI channel exactly like 替换选中 — the tab keeps the buttons
+     and the panel performs them. Only 「关闭」 stays off: as a tab the container
+     IS the tab. */
   html.ai-view #ai-close { display: none !important; }
 
   /* ---------- the session tab ----------
@@ -1059,13 +1074,14 @@
 </head>
 <body>
 <div class="app">
+  <div class="tb-strip" id="tb-strip"><span class="chips" id="chips"></span></div>
   <div class="bar" id="bar">
-    <span class="chips" id="chips"></span>
     <input class="input" id="search" placeholder="搜索邮件…">
     <button class="btn" id="btn-search">搜索</button>
     <span class="grow"></span>
     <button class="btn" id="btn-ai-sum" hidden>总结已选</button>
     <button class="btn" id="btn-ai-ask" hidden>提问已选</button>
+    <button class="btn" id="btn-rightbar" data-overflow="1" title="打开 / 隐藏 DSH 右侧边栏">侧栏</button>
     <button class="btn" id="btn-refresh" data-overflow="1">刷新</button>
     <button class="btn" id="btn-rules" data-overflow="1">分类规则</button>
     <button class="btn" id="btn-sessions" data-overflow="1">会话</button>
@@ -3203,6 +3219,36 @@ function aiIntoReply () {
   $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
   syncComposeOptional()
   setNotice('已填入撰写区，确认后再点发送')
+}
+
+function aiIntoNewMail () {
+  var text = state.ai.text
+  if (!text) return
+  var subject = ''
+  if (/^\s*主题[:：]/.test(text)) {
+    var lines = text.split('\n')
+    subject = lines[0].replace(/^\s*主题[:：]\s*/, '').trim()
+    text = lines.slice(1).join('\n').replace(/^\s*\n/, '')
+  }
+  startCompose(null)
+  $('c-subject').value = subject
+  $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
+  syncComposeOptional()
+  setNotice('已填入新邮件，填好收件人后发送')
+}
+
+// The AI tab keeps its buttons, but the composer they write into is in another
+// frame — so the tab asks and the panel performs, the same relay 替换选中 uses.
+function aiInsertReply () {
+  if (!AI_VIEW) { aiIntoReply(); return }
+  if (!aiBus) { setError('面板没有开着，无法填入'); return }
+  try { aiBus.postMessage({ type: 'ai/insert', target: 'reply' }) } catch (error) { setError('无法通知面板') }
+}
+
+function aiInsertNew () {
+  if (!AI_VIEW) { aiIntoNewMail(); return }
+  if (!aiBus) { setError('面板没有开着，无法填入'); return }
+  try { aiBus.postMessage({ type: 'ai/insert', target: 'new' }) } catch (error) { setError('无法通知面板') }
 }
 
 // Optional header fields are folded away while they are empty. A reply needs the
@@ -5904,6 +5950,12 @@ if (aiBus) {
       $('ai-question').value = String(msg.question || '')
       aiSendQuestion()
     }
+    // 填入回复 / 填入新邮件 write into this frame's composer, so the tab's buttons
+    // are performed here.
+    if (msg.type === 'ai/insert' && !AI_VIEW) {
+      if (msg.target === 'new') aiIntoNewMail()
+      else aiIntoReply()
+    }
   }
   window.addEventListener('pagehide', function () { try { aiBus.close() } catch (error) { /* ignore */ } })
 }
@@ -6639,6 +6691,30 @@ function deleteSig () {
 
 $('add-cc').onclick = function () { composeField('cc', true, true) }
 $('add-subject').onclick = function () { composeField('subject', true, true) }
+// DSH's right column can fold itself away, and until now nothing in the panel
+// could ask for it back. The label follows the last thing we asked for.
+;(function () {
+  var btn = $('btn-rightbar')
+  if (!btn) return
+  var open = false
+  try { open = localStorage.getItem('dsh-tb-rightbar') === '1' } catch (error) { open = false }
+  function paint () {
+    btn.classList.toggle('on', open)
+    btn.title = open ? '隐藏 DSH 右侧边栏' : '打开 DSH 右侧边栏（AI 输出 / 邮件会话在里面）'
+  }
+  paint()
+  btn.onclick = function () {
+    var want = !open
+    dshCall('panel/rightbar', { open: want }, 15000).then(function () {
+      open = want
+      try { localStorage.setItem('dsh-tb-rightbar', want ? '1' : '0') } catch (error) { /* ignore */ }
+      paint()
+      setNotice(want ? '已展开右侧边栏' : '已隐藏右侧边栏')
+    }).catch(function (error) {
+      setError('侧边栏操作失败：' + String((error && error.message) || error))
+    })
+  }
+})()
 // Once opened, a field stays open for the rest of this compose session. Folding
 // it again on blur looked tidy but collapsed BOTH fields the moment the second
 // one took focus — the blur fired inside the focus() that the click had just
@@ -6783,22 +6859,8 @@ $('ai-replace').onclick = function () {
   ctxReplaceSelection()
 }
 $('ai-replace').onclick = ctxReplaceSelection
-$('ai-reply').onclick = aiIntoReply
-$('ai-new').onclick = function () {
-  var text = state.ai.text
-  if (!text) return
-  var subject = ''
-  if (/^\s*主题[:：]/.test(text)) {
-    var lines = text.split('\n')
-    subject = lines[0].replace(/^\s*主题[:：]\s*/, '').trim()
-    text = lines.slice(1).join('\n').replace(/^\s*\n/, '')
-  }
-  startCompose(null)
-  $('c-subject').value = subject
-  $('c-body').innerHTML = '<p>' + escapeHtml(String(text)).replace(/\n/g, '<br>') + '</p>' + '\n'
-  syncComposeOptional()
-  setNotice('已填入新邮件，填好收件人后发送')
-}
+$('ai-reply').onclick = aiInsertReply
+$('ai-new').onclick = aiInsertNew
 $('ai-lang').onchange = function () { setNotice('翻译目标语言：' + this.value) }
 $('ai-send').onclick = aiSendQuestion
 $('ai-question').addEventListener('keydown', function (event) { if (event.key === 'Enter') aiSendQuestion() })

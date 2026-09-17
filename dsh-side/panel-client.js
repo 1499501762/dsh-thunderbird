@@ -85,6 +85,9 @@ window.__ModuleLoader__.load({
     // tried to register a type that was already registered — which threw and sent
     // the open down the opaque-origin browser fallback.
     var tabDisposers = { ai: null, session: null }
+    // The url each tab type was last opened with, so a repeated open of the same
+    // target does not close and reopen the tab under the user.
+    var lastOpenedUrl = { ai: null, session: null }
 
     // The two tabs this panel contributes to DSH's native right column.
     var TAB_TYPES = {
@@ -756,6 +759,30 @@ window.__ModuleLoader__.load({
         }
 
 
+        // Show or hide DSH's own right column.
+        //
+        // `openRightbar` is called automatically when a tab opens, but there was
+        // no way to ask for the COLUMN itself — so when it folded away there was
+        // nothing left to click. `setRightbar` is the precise op; the open/close
+        // pair is the fallback.
+        if (msg.type === 'panel/rightbar') {
+          var lyt = serviceOf(activeCtx, 'layout')
+          if (lyt === undefined) { replyTo(event.source, msg.id, { ok: false, error: 'layout 服务不可用' }); return }
+          var want = msg.open === true
+          var how = ''
+          try {
+            if (lyt.panels && typeof lyt.panels.setRightbar === 'function') { lyt.panels.setRightbar(want); how = 'setRightbar' }
+            else if (want && typeof lyt.openRightbar === 'function') { lyt.openRightbar(); how = 'openRightbar' }
+            else if (!want && typeof lyt.closeRightbar === 'function') { lyt.closeRightbar(); how = 'closeRightbar' }
+            else { replyTo(event.source, msg.id, { ok: false, error: '没有可用的右侧栏开关' }); return }
+          } catch (error) {
+            replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })
+            return
+          }
+          replyTo(event.source, msg.id, { ok: true, result: { how: how, open: want } })
+          return
+        }
+
         if (msg.type === 'panel/open-ai' || msg.type === 'panel/open-tab') {
           var facts = []
           var sidebar = serviceOf(activeCtx, 'betterSidebar')
@@ -822,6 +849,19 @@ window.__ModuleLoader__.load({
             return -1
           }
 
+          // A `single: true` type dedupes onto the instance already open, and a
+          // dedupe focus does NOT carry the new seed. `updateTab` patches the
+          // record but does NOT remount the tab body, so an iframe that is already
+          // mounted keeps pointing at its OLD src — which is how the AI tab ended
+          // up as a bare /ui with no ?view=ai. Closing first forces a fresh mount
+          // that reads the seed. The last-open url is remembered so repeated opens
+          // of the same target do not flicker.
+          if (lastOpenedUrl[kind] !== url) {
+            try { sidebar.closeTab(spec.id) } catch (error) { /* not open */ }
+            lastOpenedUrl[kind] = url
+            facts.push('reopened')
+          }
+
           try {
             sidebar.openTab({ type: spec.id, url: url, title: title })
           } catch (error) {
@@ -830,9 +870,19 @@ window.__ModuleLoader__.load({
           }
 
           // A `single: true` type dedupes onto the instance that is already open,
-          // and a dedupe focus does NOT carry the new seed — so re-opening the
-          // session tab for a DIFFERENT mail thread kept pointing at the old one.
-          // Re-target it explicitly; `updateTab` is the API for exactly this.
+          // and a dedupe focus does NOT carry the new seed. Patching the record
+          // with `updateTab` is not enough: the tab BODY reads the seed when it
+          // renders, and the patch does not make it render again.
+          // What does work — measured, not assumed — is issuing the open a second
+          // time: the tab already exists, so this focuses it AND applies the seed,
+          // and the frame lands on the right page. One open alone left the AI tab
+          // pointing at a bare /ui.
+          var reissue = function () {
+            try { sidebar.openTab({ type: spec.id, url: url, title: title }) } catch (error) { /* already open */ }
+          }
+          setTimeout(reissue, 250)
+          setTimeout(reissue, 900)
+
           if (typeof sidebar.updateTab === 'function') {
             try {
               sidebar.updateTab(spec.id, { path: url, title: title })
