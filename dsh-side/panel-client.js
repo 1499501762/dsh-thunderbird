@@ -636,18 +636,17 @@ window.__ModuleLoader__.load({
 
           // openTab returns silently for an unknown or disabled type, so verify
           // against the snapshot instead of believing the call.
-          var openCount = -1
-          try {
-            var snap = sidebar.getSnapshot()
-            var tabs = snap && snap.state && Array.isArray(snap.state.tabs) ? snap.state.tabs : null
-            openCount = tabs === null ? -1 : tabs.filter(function (tab) {
-              return tab && (tab.type === AI_TAB || String(tab.id || '').indexOf(AI_TAB) === 0)
-            }).length
-          } catch (error) { openCount = -2 }
-          facts.push('openTabs=' + openCount)
-          replyTo(event.source, msg.id, openCount > 0
+          // There is NO local way to verify a native-sidebar open: the right column
+          // belongs to DSH, and getSnapshot() only reports this plugin's OWN bottom
+          // workbench (SidebarState carries bottomSplits, not the native tabs). An
+          // earlier version counted tabs there and reported failure for an open
+          // that had actually worked. The honest signals are that the type is
+          // registered and that it is not switched off in the side-card settings.
+          var enabled = typeof sidebar.isTabEnabled === 'function' ? sidebar.isTabEnabled(AI_TAB) : true
+          facts.push('enabled=' + enabled)
+          replyTo(event.source, msg.id, enabled
             ? { ok: true, result: facts.join(' ') }
-            : { ok: false, error: 'openTab 没有落到这个类型上（多半被设置里禁用了）：' + facts.join(' ') })
+            : { ok: false, error: '这个标签类型在右侧边栏设置里被关掉了，启用它即可：' + facts.join(' ') })
           return
         }
 
