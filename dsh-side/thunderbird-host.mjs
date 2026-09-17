@@ -24,7 +24,9 @@
 
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { readFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { createHash } from 'node:crypto'
+import { readFile, writeFile, mkdir, rm, stat } from 'node:fs/promises'
 
 export const name = 'dsh-thunderbird'
 
@@ -220,7 +222,7 @@ export function apply(ctx, config) {
       inFlight: state.pending.size,
       events: state.eventSeq,
       handled: state.handled,
-      endpoints: ['/api/thunderbird/poll', '/api/thunderbird/result', '/api/thunderbird/event', '/api/thunderbird/rpc', '/api/thunderbird/ai', '/api/thunderbird/ui'],
+      endpoints: ['/api/thunderbird/poll', '/api/thunderbird/result', '/api/thunderbird/event', '/api/thunderbird/rpc', '/api/thunderbird/ai', '/api/thunderbird/ui', '/api/thunderbird/session/list'],
     })
   }
 
@@ -374,6 +376,557 @@ export function apply(ctx, config) {
     })
   }
 
+  // ---- mail sessions -------------------------------------------------------
+  //
+  // An aggregated subject can own a real DSH workspace. The binding materialises
+  // as a directory holding the thread as plain readable files; the client half
+  // registers that directory as a workspace and connects a session to it, so the
+  // conversation about a thread is an ordinary DSH session with the mail sitting
+  // in its working directory. Everything is recorded in one registry file plus
+  // two files inside the thread directory, so the binding outlives the panel.
+
+  const HOME_DIR = process.env.DSH_HOME || join(homedir(), '.dsh')
+  const STORE_DIR = join(HOME_DIR, 'dsh-thunderbird')
+  const REGISTRY_PATH = join(STORE_DIR, 'mail-sessions.json')
+  const DEFAULT_SESSION_ROOT = join(STORE_DIR, 'mail')
+  const THREAD_FILE = 'thread.md'
+  const AI_LOG_FILE = 'ai-log.md'
+
+  const store = { version: 1, root: DEFAULT_SESSION_ROOT, sessions: {} }
+  let storeLoaded = false
+
+  async function loadStore () {
+    if (storeLoaded) return
+    storeLoaded = true
+    try {
+      const parsed = JSON.parse(await readFile(REGISTRY_PATH, 'utf8'))
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed.root === 'string' && parsed.root) store.root = parsed.root
+        if (parsed.sessions && typeof parsed.sessions === 'object') store.sessions = parsed.sessions
+      }
+    } catch (error) { /* first run: defaults are already in place */ }
+  }
+
+  async function saveStore () {
+    await mkdir(STORE_DIR, { recursive: true })
+    await writeFile(REGISTRY_PATH, JSON.stringify(store, null, 2), 'utf8')
+  }
+
+  // A path segment that survives Windows and still reads like the subject.
+  const slugify = (value, limit) => {
+    const slug = String(value === undefined || value === null ? '' : value)
+      .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+      .replace(/\s+/g, '-')
+      .replace(/^[.\-\s]+/, '')
+      .replace(/[.\-\s]+$/, '')
+      .slice(0, limit || 42)
+    return slug || 'thread'
+  }
+
+  const keyOf = (folderId, subject) => createHash('sha1')
+    .update(String(folderId || '') + '\u0000' + String(subject || ''))
+    .digest('hex')
+    .slice(0, 12)
+
+  const b64url = (value) => Buffer.from(String(value), 'utf8').toString('base64url')
+
+  // The bridge answers {ok, result} | {ok:false, error}; tools want an exception.
+  async function bridge (method, params, timeoutMs) {
+    const out = await rpc(method, params, timeoutMs || 60000)
+    if (!out || out.ok !== true) throw new Error((out && out.error) || ('bridge call failed: ' + method))
+    return out.result
+  }
+
+  const when = (ms) => {
+    const n = Number(ms)
+    return n > 0 ? new Date(n).toISOString().replace('T', ' ').slice(0, 16) : ''
+  }
+
+  const clipText = (value, limit) => {
+    const text = String(value === undefined || value === null ? '' : value)
+    const max = limit || 20000
+    return text.length > max ? text.slice(0, max) + '\n\n[已截断 ' + (text.length - max) + ' 字]' : text
+  }
+
+  // Renders one aggregated thread as the markdown the session works from.
+  async function buildThreadMarkdown (input) {
+    const messageIds = (Array.isArray(input.messageIds) ? input.messageIds : []).slice(0, 12)
+    const subject = String(input.subject || '(无主题)')
+    const out = []
+    out.push('# ' + subject)
+    out.push('')
+    out.push('| 项 | 值 |')
+    out.push('| --- | --- |')
+    out.push('| 文件夹 | `' + String(input.folderId || '') + '` |')
+    out.push('| 邮件数 | ' + messageIds.length + ' |')
+    out.push('| 导出时间 | ' + new Date().toISOString().replace('T', ' ').slice(0, 19) + ' |')
+    out.push('')
+    out.push('> 本目录是 DSH 里这条邮件线的工作区。正文来自 Thunderbird，只读；')
+    out.push('> AI 的产出记在 `' + AI_LOG_FILE + '`，重新同步本文件会覆盖它。')
+    out.push('')
+
+    const attachments = []
+    let index = 0
+    for (const messageId of messageIds) {
+      index += 1
+      let header = null
+      try {
+        header = await bridge('messages.get', { messageId }, 30000)
+      } catch (error) { /* a message may be gone; keep the rest of the thread */ }
+      let body = null
+      try {
+        body = await bridge('messages.body', { messageId, preferHtml: false }, 120000)
+      } catch (error) { /* large or unreadable body: header only */ }
+
+      out.push('## ' + index + '. ' + (header && header.subject ? header.subject : '(邮件 ' + messageId + ')'))
+      out.push('')
+      out.push('- 发件人：' + ((header && header.author) || '未知'))
+      out.push('- 收件人：' + (((header && header.recipients) || []).join(', ') || '-'))
+      if (header && header.ccList && header.ccList.length) out.push('- 抄送：' + header.ccList.join(', '))
+      out.push('- 时间：' + when(header && header.date))
+      out.push('- messageId：`' + messageId + '`')
+      if (header && header.hasAttachment) out.push('- 含附件：是')
+      out.push('')
+      const text = body && body.text ? clipText(body.text, 20000) : '(未能读取正文)'
+      out.push(text)
+      out.push('')
+      const files = (body && body.attachments) || []
+      for (const file of files) {
+        attachments.push({ name: file.name, size: file.size, messageId })
+      }
+      out.push('---')
+      out.push('')
+    }
+
+    if (attachments.length > 0) {
+      out.push('## 附件清单')
+      out.push('')
+      for (const file of attachments) {
+        out.push('- `' + String(file.name || '(未命名)') + '` · ' + (file.size || 0) + ' B · messageId ' + file.messageId)
+      }
+      out.push('')
+    }
+    return out.join('\n')
+  }
+
+  const sessionRecord = (key) => store.sessions[key]
+
+  async function writeThreadFile (record, markdown) {
+    await mkdir(record.dir, { recursive: true })
+    await writeFile(join(record.dir, THREAD_FILE), markdown, 'utf8')
+  }
+
+  async function appendAiRecord (record, entry) {
+    record.ai = Array.isArray(record.ai) ? record.ai : []
+    record.ai.push(entry)
+    if (record.ai.length > 300) record.ai.splice(0, record.ai.length - 300)
+    await mkdir(record.dir, { recursive: true })
+    const stamp = new Date(entry.at).toISOString().replace('T', ' ').slice(0, 19)
+    const head = '\n## ' + stamp + ' · ' + String(entry.action || 'ai') + (entry.model ? ' · ' + entry.model : '') + '\n'
+    const ask = entry.question ? '\n**问：** ' + String(entry.question).replace(/\s+/g, ' ').slice(0, 500) + '\n' : ''
+    const block = head + ask + '\n' + String(entry.text || '').trim() + '\n'
+    await writeFile(join(record.dir, AI_LOG_FILE), block, { encoding: 'utf8', flag: 'a' })
+  }
+
+  const sessionListHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    await loadStore()
+    const items = Object.keys(store.sessions).map((key) => {
+      const record = store.sessions[key]
+      return {
+        key,
+        folderId: record.folderId,
+        subject: record.subject,
+        title: record.title,
+        dir: record.dir,
+        workspaceId: record.workspaceId || null,
+        sessionId: record.sessionId || null,
+        messageCount: record.messageCount || 0,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt,
+        syncedAt: record.syncedAt || null,
+        aiCount: Array.isArray(record.ai) ? record.ai.length : 0,
+        lastAction: Array.isArray(record.ai) && record.ai.length ? record.ai[record.ai.length - 1].action : null,
+      }
+    }).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    sendJson(res, 200, { ok: true, root: store.root, registry: REGISTRY_PATH, sessions: items })
+  }
+
+  const sessionCreateHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    if (input === null || !input.subject) { sendJson(res, 400, { ok: false, error: 'expected {subject, folderId, messageIds}' }); return }
+    try {
+      await loadStore()
+      const subject = String(input.subject)
+      const folderId = String(input.folderId || '')
+      const key = String(input.key || '').replace(/[^a-z0-9]/gi, '').slice(0, 32) || keyOf(folderId, subject)
+      const existing = sessionRecord(key)
+      const dir = (existing && existing.dir) || join(store.root, slugify(subject) + '-' + key)
+      const now = Date.now()
+      const record = existing || {
+        key,
+        subject,
+        folderId,
+        title: subject,
+        dir,
+        createdAt: now,
+        ai: [],
+      }
+      record.subject = subject
+      record.folderId = folderId
+      record.messageCount = Array.isArray(input.messageIds) ? input.messageIds.length : 0
+      record.updatedAt = now
+      store.sessions[key] = record
+
+      const markdown = await buildThreadMarkdown({ subject, folderId, messageIds: input.messageIds })
+      await writeThreadFile(record, markdown)
+      record.syncedAt = Date.now()
+      if (!record.aiFileReady) {
+        record.aiFileReady = true
+        await writeFile(join(record.dir, AI_LOG_FILE),
+          '# AI 记录 · ' + subject + '\n\n> 面板里每一次 AI 动作都会追加到这里。\n',
+          { encoding: 'utf8', flag: 'a' })
+      }
+      await saveStore()
+      sendJson(res, 200, { ok: true, session: store.sessions[key] })
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    }
+  }
+
+  const sessionSyncHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    if (input === null || !input.key) { sendJson(res, 400, { ok: false, error: 'expected {key, messageIds}' }); return }
+    try {
+      await loadStore()
+      const record = sessionRecord(String(input.key))
+      if (!record) { sendJson(res, 200, { ok: false, error: 'unknown session key' }); return }
+      const markdown = await buildThreadMarkdown({
+        subject: record.subject,
+        folderId: record.folderId,
+        messageIds: input.messageIds,
+      })
+      await writeThreadFile(record, markdown)
+      record.messageCount = Array.isArray(input.messageIds) ? input.messageIds.length : record.messageCount
+      record.syncedAt = Date.now()
+      record.updatedAt = Date.now()
+      await saveStore()
+      sendJson(res, 200, { ok: true, session: record })
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    }
+  }
+
+  const sessionAttachHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    if (input === null || !input.key) { sendJson(res, 400, { ok: false, error: 'expected {key, workspaceId, sessionId}' }); return }
+    await loadStore()
+    const record = sessionRecord(String(input.key))
+    if (!record) { sendJson(res, 200, { ok: false, error: 'unknown session key' }); return }
+    if (input.workspaceId) record.workspaceId = String(input.workspaceId)
+    if (input.sessionId) record.sessionId = String(input.sessionId)
+    record.updatedAt = Date.now()
+    await saveStore()
+    sendJson(res, 200, { ok: true, session: record })
+  }
+
+  const sessionLogHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    if (input === null || !input.key) { sendJson(res, 400, { ok: false, error: 'expected {key, action, text}' }); return }
+    try {
+      await loadStore()
+      const record = sessionRecord(String(input.key))
+      if (!record) { sendJson(res, 200, { ok: false, error: 'unknown session key' }); return }
+      await appendAiRecord(record, {
+        at: Date.now(),
+        action: String(input.action || 'ai'),
+        model: input.model ? String(input.model) : '',
+        question: input.question ? String(input.question) : '',
+        text: String(input.text || ''),
+      })
+      record.updatedAt = Date.now()
+      await saveStore()
+      sendJson(res, 200, { ok: true, count: record.ai.length })
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    }
+  }
+
+  const sessionRemoveHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    if (input === null || !input.key) { sendJson(res, 400, { ok: false, error: 'expected {key}' }); return }
+    await loadStore()
+    const record = sessionRecord(String(input.key))
+    if (!record) { sendJson(res, 200, { ok: true, removed: false }); return }
+    delete store.sessions[String(input.key)]
+    await saveStore()
+    let filesRemoved = false
+    if (input.deleteFiles === true) {
+      try { await rm(record.dir, { recursive: true, force: true }); filesRemoved = true } catch (error) { /* keep the directory */ }
+    }
+    sendJson(res, 200, { ok: true, removed: true, filesRemoved })
+  }
+
+  const sessionFileHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    await loadStore()
+    const record = sessionRecord(String(param(req.url, 'key') || ''))
+    if (!record) { sendJson(res, 200, { ok: false, error: 'unknown session key' }); return }
+    const which = param(req.url, 'file') === AI_LOG_FILE ? AI_LOG_FILE : THREAD_FILE
+    try {
+      const text = await readFile(join(record.dir, which), 'utf8')
+      sendJson(res, 200, { ok: true, file: which, dir: record.dir, text })
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error), dir: record.dir })
+    }
+  }
+
+  // ---- DSH tools -----------------------------------------------------------
+  //
+  // Registering the bridge as tools is what actually mounts the mail capability
+  // into DSH: every session — including the ones bound to a thread — can read,
+  // search and answer mail with its own model and its own tools.
+
+  const toolText = (value) => [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }]
+  const toolOutput = (schema) => ({ schema, render: (args, value) => toolText(value) })
+  const str = (description) => ({ type: 'string', description })
+  const num = (description) => ({ type: 'number', description })
+
+  const folderOptions = async () => {
+    // folders.tree answers one entry per ACCOUNT, each carrying a rootFolder.
+    const accounts = await bridge('folders.tree', {}, 60000)
+    const flat = []
+    const walk = (folder) => {
+      if (!folder || !folder.id) return
+      flat.push({ id: folder.id, name: folder.name, path: folder.path })
+      for (const child of folder.subFolders || []) walk(child)
+    }
+    for (const account of accounts || []) walk(account.rootFolder)
+    return flat
+  }
+
+  const findFolder = async (wanted) => {
+    const flat = await folderOptions()
+    if (!wanted) return flat.find((f) => /^\/?inbox$/i.test(f.path || '')) || flat[0]
+    const needle = String(wanted).toLowerCase()
+    return flat.find((f) => f.id === wanted) ||
+      flat.find((f) => (f.path || '').toLowerCase() === needle) ||
+      flat.find((f) => (f.name || '').toLowerCase() === needle) ||
+      flat.find((f) => (f.name || '').toLowerCase().includes(needle)) ||
+      null
+  }
+
+  const formatHeader = (header) => [
+    '#' + header.id + '  ' + when(header.date),
+    '  ' + (header.author || '未知'),
+    '  ' + (header.subject || '(无主题)'),
+    header.read ? '  已读' : '  未读',
+  ].join('\n')
+
+  async function collectThreadMessages (subject, folderId) {
+    // The bridge searches server-side, so the thread is not limited by whatever
+    // page the panel happens to have loaded.
+    const found = await bridge('messages.search', { text: subject, limit: 40 }, 180000)
+    const wanted = String(subject || '').replace(/^(\s*(re|fw|fwd|回复|答复|转发)\s*[:：]\s*)+/i, '').trim().toLowerCase()
+    const same = (value) => String(value || '')
+      .replace(/^(\s*(re|fw|fwd|回复|答复|转发)\s*[:：]\s*)+/i, '')
+      .trim().toLowerCase() === wanted
+    const hits = (found && found.messages ? found.messages : []).filter((m) => same(m.subject))
+    if (folderId) return hits.filter((m) => String(m.folderId || '') === String(folderId))
+    return hits
+  }
+
+  function registerTools () {
+    const tools = ctx.get('tools')
+    if (tools === undefined) {
+      console.error('[dsh-thunderbird] tools service is unavailable; mail tools not registered')
+      return
+    }
+    const definitions = [
+      {
+        name: 'thunderbird_folders',
+        description: 'List Thunderbird mail folders as {id, name, path}. Use the id with the other thunderbird tools.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+        output: toolOutput({ type: 'object' }),
+        execute: async () => {
+          const flat = await folderOptions()
+          return flat.map((f) => f.id + '  ' + f.name + '  (' + f.path + ')').join('\n') || '(没有文件夹)'
+        },
+      },
+      {
+        name: 'thunderbird_search',
+        description: 'Search the user\'s mail in Thunderbird (server-side, whole mailbox, not just the loaded page). Returns id, date, sender and subject of each hit.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: str('Text to search for: subject, sender or body content.'),
+            folderId: str('Optional folder id from thunderbird_folders; omit to search every folder.'),
+            limit: num('Maximum hits to return, default 20.'),
+          },
+          required: ['query'],
+          additionalProperties: false,
+        },
+        output: toolOutput({ type: 'object' }),
+        execute: async (args) => {
+          const input = args || {}
+          const found = await bridge('messages.search', {
+            text: String(input.query || ''),
+            limit: Math.min(Math.max(Number(input.limit) || 20, 1), 100),
+          }, 180000)
+          let messages = (found && found.messages) || []
+          if (input.folderId) messages = messages.filter((m) => String(m.folderId || '') === String(input.folderId))
+          if (messages.length === 0) return '没有匹配的邮件。'
+          return messages.map(formatHeader).join('\n\n')
+        },
+      },
+      {
+        name: 'thunderbird_thread',
+        description: 'Read one aggregated mail thread (all messages sharing a subject) as a single markdown digest with full bodies. This is the tool to use before answering, summarising, translating or drafting a reply to a thread.',
+        parameters: {
+          type: 'object',
+          properties: {
+            subject: str('Thread subject, with or without a Re:/Fwd: prefix.'),
+            folderId: str('Optional folder id to restrict the thread to one folder.'),
+          },
+          required: ['subject'],
+          additionalProperties: false,
+        },
+        output: toolOutput({ type: 'object' }),
+        execute: async (args) => {
+          const input = args || {}
+          const subject = String(input.subject || '')
+          const messages = await collectThreadMessages(subject, input.folderId)
+          if (messages.length === 0) return '没有找到主题匹配「' + subject + '」的邮件。'
+          const digest = await buildThreadMarkdown({
+            subject: messages[0].subject || subject,
+            folderId: input.folderId || messages[0].folderId || '',
+            messageIds: messages.map((m) => m.id).slice(0, 12),
+          })
+          return digest
+        },
+      },
+      {
+        name: 'thunderbird_message',
+        description: 'Read one message by id: headers plus the plain-text body (HTML-only mail is reduced to text).',
+        parameters: {
+          type: 'object',
+          properties: { messageId: num('The numeric message id (an integer, not the rfc Message-ID).') },
+          required: ['messageId'],
+          additionalProperties: false,
+        },
+        output: toolOutput({ type: 'object' }),
+        execute: async (args) => {
+          const messageId = (args || {}).messageId
+          const header = await bridge('messages.get', { messageId }, 60000)
+          const body = await bridge('messages.body', { messageId, preferHtml: false }, 180000)
+          const attachments = (body && body.attachments) || []
+          return [
+            'id: ' + messageId,
+            'Date: ' + when(header && header.date),
+            'From: ' + ((header && header.author) || '未知'),
+            'To: ' + (((header && header.recipients) || []).join(', ') || '-'),
+            'Subject: ' + ((header && header.subject) || '(无主题)'),
+            attachments.length ? 'Attachments: ' + attachments.map((a) => a.name + ' (' + a.size + ' B)').join(', ') : '',
+            '',
+            clipText((body && body.text) || '(没有可读正文)', 30000),
+          ].filter((line) => line !== '').join('\n')
+        },
+      },
+      {
+        name: 'thunderbird_flag',
+        description: 'Change the read/flagged state of one message in Thunderbird.',
+        parameters: {
+          type: 'object',
+          properties: {
+            messageId: num('The numeric message id.'),
+            read: { type: 'boolean', description: 'Mark as read (true) or unread (false).' },
+            flagged: { type: 'boolean', description: 'Star (true) or unstar (false).' },
+          },
+          required: ['messageId'],
+          additionalProperties: false,
+        },
+        output: toolOutput({ type: 'object' }),
+        execute: async (args) => {
+          const input = args || {}
+          const params = { messageId: input.messageId }
+          if (typeof input.read === 'boolean') params.read = input.read
+          if (typeof input.flagged === 'boolean') params.flagged = input.flagged
+          const out = await bridge('messages.update', params, 60000)
+          return JSON.stringify(out)
+        },
+      },
+      {
+        name: 'thunderbird_send',
+        description: 'Send an email through the user\'s Thunderbird account. This really sends mail: only call it when the user asked for it.',
+        parameters: {
+          type: 'object',
+          properties: {
+            to: str('Comma-separated recipients.'),
+            subject: str('Subject line.'),
+            body: str('Plain-text body.'),
+            cc: str('Optional comma-separated carbon copy.'),
+          },
+          required: ['to', 'subject', 'body'],
+          additionalProperties: false,
+        },
+        output: toolOutput({ type: 'object' }),
+        execute: async (args) => {
+          const input = args || {}
+          const split = (value) => String(value || '').split(/[,;]/).map((s) => s.trim()).filter(Boolean)
+          const out = await bridge('messages.send', {
+            to: split(input.to),
+            cc: split(input.cc),
+            subject: String(input.subject || ''),
+            body: String(input.body || ''),
+          }, 180000)
+          return JSON.stringify(out)
+        },
+      },
+      {
+        name: 'thunderbird_rules',
+        description: 'List or run the local classification rules stored inside the Thunderbird add-on (they run on new mail even when DSH is closed).',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['list', 'run'], description: 'list the rules, or run them over a folder.' },
+            folderId: str('Folder id for action=run.'),
+            dryRun: { type: 'boolean', description: 'For action=run: only report what would match.' },
+          },
+          required: ['action'],
+          additionalProperties: false,
+        },
+        output: toolOutput({ type: 'object' }),
+        execute: async (args) => {
+          const input = args || {}
+          if (input.action === 'list') return JSON.stringify(await bridge('rules.get', {}, 60000), null, 2)
+          return JSON.stringify(await bridge('rules.run', {
+            folderId: input.folderId,
+            dryRun: input.dryRun !== false,
+          }, 180000), null, 2)
+        },
+      },
+    ]
+
+    for (const definition of definitions) {
+      try {
+        ctx.effect(() => tools.register(definition))
+      } catch (error) {
+        console.error('[dsh-thunderbird] tool ' + definition.name + ' not registered: ' + err(error))
+      }
+    }
+    console.log('[dsh-thunderbird] registered ' + definitions.length + ' mail tools')
+  }
+
   // ---- mount ---------------------------------------------------------------
 
   const routes = [
@@ -386,6 +939,13 @@ export function apply(ctx, config) {
     ['/api/thunderbird/ui', uiHandler],
     ['/api/thunderbird/ai', aiHandler],
     ['/api/thunderbird/ai/status', aiStatusHandler],
+    ['/api/thunderbird/session/list', sessionListHandler],
+    ['/api/thunderbird/session/create', sessionCreateHandler],
+    ['/api/thunderbird/session/sync', sessionSyncHandler],
+    ['/api/thunderbird/session/attach', sessionAttachHandler],
+    ['/api/thunderbird/session/log', sessionLogHandler],
+    ['/api/thunderbird/session/remove', sessionRemoveHandler],
+    ['/api/thunderbird/session/file', sessionFileHandler],
   ]
   const disposers = []
   for (let i = 0; i < routes.length; i++) {
@@ -407,6 +967,14 @@ export function apply(ctx, config) {
     for (let i = 0; i < pending.length; i++) {
       try { pending[i]({ ok: false, error: 'bridge stopped' }) } catch (error) { /* ignore */ }
     }
+  })
+
+  registerTools()
+  loadStore().then(() => {
+    const count = Object.keys(store.sessions).length
+    console.log('[dsh-thunderbird] ' + count + ' mail session(s) recorded in ' + REGISTRY_PATH)
+  }).catch((error) => {
+    console.error('[dsh-thunderbird] session registry unreadable: ' + err(error))
   })
 
   console.log('[dsh-thunderbird] bridge mounted at /api/thunderbird/* (ui: ' + uiPath + ')')

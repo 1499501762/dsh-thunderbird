@@ -363,11 +363,123 @@ window.__ModuleLoader__.load({
       syncShield()
     }
 
+    // ---- mail-session bridge -------------------------------------------------
+    // The panel is a same-origin iframe and cannot reach DSH services itself, so
+    // it asks this half — which runs inside the shell — to register a thread
+    // directory as a workspace and connect a session to it. The panel then keeps
+    // the returned ids in its own durable record and can reopen the session.
+    var HOST_ORIGIN = location.origin
+
+    function replyTo (source, id, payload) {
+      if (!source || typeof source.postMessage !== 'function') return
+      var message = { from: 'dsh-thunderbird', id: id, ok: payload.ok !== false }
+      if (payload.ok === false) message.error = String(payload.error || 'failed')
+      else message.result = payload.result === undefined ? null : payload.result
+      try { source.postMessage(message, HOST_ORIGIN) } catch (error) { /* frame gone */ }
+    }
+
+    function serviceOf (ctx, name) {
+      if (!ctx || typeof ctx.get !== 'function') return undefined
+      return ctx.get(name)
+    }
+
+    function workspaceIdOf (view) {
+      if (!view) return null
+      if (view.id) return String(view.id)
+      if (view.workspaceId) return String(view.workspaceId)
+      if (view.workspace && view.workspace.id) return String(view.workspace.id)
+      return null
+    }
+
+    async function createMailSession (ctx, msg) {
+      var workspaces = serviceOf(ctx, 'workspaces')
+      var uiWorkspace = serviceOf(ctx, 'uiWorkspace')
+      if (workspaces === undefined) throw new Error('DSH workspaces 服务不可用')
+      if (uiWorkspace === undefined) throw new Error('DSH uiWorkspace 服务不可用')
+      if (!msg.dir) throw new Error('缺少工作区目录')
+
+      var view = await workspaces.create({ path: String(msg.dir) })
+      var workspaceId = workspaceIdOf(view)
+      if (!workspaceId) throw new Error('DSH 未返回 workspaceId')
+      if (msg.title) {
+        try { await workspaces.rename(workspaceId, String(msg.title)) } catch (error) { /* title is cosmetic */ }
+      }
+      var sessionId = await uiWorkspace.connectWorkspace(workspaceId)
+      if (!sessionId) throw new Error('DSH 未返回 sessionId')
+      return { workspaceId: workspaceId, sessionId: String(sessionId) }
+    }
+
+    function onWindowMessage (ctx) {
+      return function (event) {
+        if (event.origin !== HOST_ORIGIN) return
+        // Only the mail panel's own frame is accepted, never a random embedder.
+        if (frameEl === null || event.source !== frameEl.contentWindow) return
+        var msg = event.data
+        if (!msg || msg.to !== 'dsh-thunderbird' || typeof msg.id !== 'string') return
+
+        if (msg.type === 'ping') {
+          replyTo(event.source, msg.id, {
+            ok: true,
+            result: {
+              workspaces: serviceOf(ctx, 'workspaces') !== undefined,
+              uiWorkspace: serviceOf(ctx, 'uiWorkspace') !== undefined,
+              sessions: serviceOf(ctx, 'sessions') !== undefined,
+              layout: serviceOf(ctx, 'layout') !== undefined,
+            },
+          })
+          return
+        }
+
+        if (msg.type === 'session/create') {
+          createMailSession(ctx, msg).then(function (result) {
+            replyTo(event.source, msg.id, { ok: true, result: result })
+          }).catch(function (error) {
+            replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })
+          })
+          return
+        }
+
+        if (msg.type === 'session/open' || msg.type === 'session/open-right') {
+          var sessions = serviceOf(ctx, 'sessions')
+          var layout = serviceOf(ctx, 'layout')
+          try {
+            if (sessions === undefined) throw new Error('DSH sessions 服务不可用')
+            if (!msg.sessionId) throw new Error('缺少 sessionId')
+            if (msg.type === 'session/open-right' && layout !== undefined) {
+              sessions.open(String(msg.sessionId))
+              layout.openRightbar(true, false)
+              closePanel()
+            } else {
+              sessions.open(String(msg.sessionId))
+              closePanel()
+            }
+            replyTo(event.source, msg.id, { ok: true, result: true })
+          } catch (error) {
+            replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })
+          }
+          return
+        }
+
+        if (msg.type === 'session/fork') {
+          var uiWs = serviceOf(ctx, 'uiWorkspace')
+          try {
+            if (uiWs === undefined || !msg.sessionId) throw new Error('无法复制会话')
+            uiWs.forkSession(String(msg.sessionId))
+            replyTo(event.source, msg.id, { ok: true, result: true })
+          } catch (error) {
+            replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })
+          }
+        }
+      }
+    }
+
     function apply (ctx) {
       try { injectCss() } catch (error) { /* styles are optional */ }
       document.addEventListener('dsh-panel-activate', onPanelActivate)
       document.addEventListener('click', onDocumentClick, true)
       document.addEventListener('keydown', onDocumentKey, true)
+      var onMessage = onWindowMessage(ctx)
+      window.addEventListener('message', onMessage)
       tryMount()
       observer = new MutationObserver(function () { try { tryMount() } catch (error) { /* never break the shell */ } })
       observer.observe(document.documentElement, { childList: true, subtree: true })
@@ -376,6 +488,7 @@ window.__ModuleLoader__.load({
           return function () {
             try { if (observer !== null) observer.disconnect() } catch (error) { /* ignore */ }
             if (probeTimer !== null) { clearInterval(probeTimer); probeTimer = null }
+            window.removeEventListener('message', onMessage)
             document.removeEventListener('dsh-panel-activate', onPanelActivate)
             document.removeEventListener('click', onDocumentClick, true)
             document.removeEventListener('keydown', onDocumentKey, true)

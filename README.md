@@ -59,6 +59,45 @@
 多选：列表勾选若干封 → 顶栏「总结已选 / 提问已选」（最多一次 8 封）。
 代写产出后点「填入回复」进撰写区（若你已填过收件人，不会被覆盖）。
 
+## 邮件会话（把一条邮件线挂成 DSH 工作区）
+
+面板里的 AI 是一次性的：回答完就散在界面里。**邮件会话**把「一个聚合后的主题」变成
+DSH 里一个真实的工作区 + 会话，于是对话、上下文和产出都留得住。
+
+对一条邮件线点「建 DSH 会话」，发生这些事：
+
+1. host 半区把这条线导出成一个目录：**`thread.md`**（每封邮件的头 + 正文 + 附件清单）
+   和 **`ai-log.md`**（AI 产出记录）；
+2. client 半区（跑在 DSH 页面里）调 `ctx.workspaces.create({path})` 把目录注册成工作区，
+   再调 `ctx.uiWorkspace.connectWorkspace(workspaceId)` 连一个会话出来；
+3. 拿到的 `workspaceId` / `sessionId` 写回绑定记录，之后「打开会话」直接进 DSH。
+
+关键点：**会话的工作目录就是那个邮件目录**。所以 DSH 自己的 agent 一进去就能用常规
+文件工具读到这封邮件，不需要任何特权接口；面板里的每一次 AI 动作也会追加进 `ai-log.md`。
+
+记录是持久的（`~/.dsh/dsh-thunderbird/mail-sessions.json`，`DSH_HOME` 优先），
+面板重启、DSH 重启都不丢；「解除」只删绑定，目录和会话都留着。
+
+面板里能做的：打开会话 / 右侧打开 / 重同步（把新邮件重新导出）/ 看 `thread.md` /
+看 `ai-log.md` / 解除。
+
+## 在 DSH 里直接用邮件（模型工具）
+
+host 半区还把这套能力注册成了 DSH 的**模型工具**，所以**任何会话**（不只是邮件会话）
+都能直接读写邮件，用自己的模型和自己的工具链：
+
+| 工具 | 作用 |
+| --- | --- |
+| `thunderbird_folders` | 列文件夹（拿 `folderId`） |
+| `thunderbird_search` | 服务端全库搜索（不受面板分页限制） |
+| `thunderbird_thread` | 按主题聚合读整条线（含正文）——回答/翻译/起草前先读它 |
+| `thunderbird_message` | 按 id 读单封（头 + 纯文本正文） |
+| `thunderbird_flag` | 已读 / 星标 |
+| `thunderbird_send` | 用你的账号真发信 |
+| `thunderbird_rules` | 查看 / 运行本地分类规则 |
+
+工具描述里明确写了 `thunderbird_send` 会真的发信，所以只有你要求时才会被调用。
+
 ## 分类规则（原生动作）
 
 Thunderbird 的 WebExtension API **不暴露原生过滤器**（没有 `messenger.filters`），所以"匹配"
@@ -167,6 +206,13 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
 | GET | `/api/thunderbird/status` | 状态诊断 |
 | GET | `/api/thunderbird/rpc?method=X&params=<urlencoded json>&timeoutMs=N` | 一次性调用（调试） |
 | GET | `/api/thunderbird/ui` | 面板 HTML |
+| GET | `/api/thunderbird/session/list` | 邮件会话绑定记录 + 会话目录根 |
+| POST | `/api/thunderbird/session/create` | 导出这条主题线为目录（`thread.md` / `ai-log.md`） |
+| POST | `/api/thunderbird/session/sync` | 用最新邮件重写 `thread.md` |
+| POST | `/api/thunderbird/session/attach` | 记下 client 半区拿到的 `workspaceId` / `sessionId` |
+| POST | `/api/thunderbird/session/log` | 追加一条 AI 记录 |
+| POST | `/api/thunderbird/session/remove` | 解除绑定（默认保留目录） |
+| GET | `/api/thunderbird/session/file` | 读 `thread.md` 或 `ai-log.md` |
 
 插件侧方法（`background.js` 的 `methods` 表）：`ping`、`accounts.list`、`folders.tree`、
 `folders.list`、`messages.list`、`messages.get`、`messages.body`、`messages.search`、
@@ -201,6 +247,15 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
   （MailExtension 里支持最久的传输方式），当前实际走的是 `fetch`（`debug.api` 的 `diag.transport`）。
 - **心跳**：后台页面启动时立刻发一个 `bridge/start` 事件，DSH 端只凭它就能区分
   「插件没起来」和「插件起来了但连不上」。
+- **邮件里的图片不能继承面板的圆角/底色**。`border-radius: 6px` 曾经让 Foxmail 签名图
+  变成一个圆角白块；现在 `.content.html img` 只约束尺寸。
+- **白底 bitmap 在暗色下是一块白砖**：白底是画在像素里的，CSS 去不掉。面板会采样图片
+  四边（`scanMailImages`），接近纯白就把这张图判成 logo/emoji 贴图，套
+  `invert(1) hue-rotate(180deg)` —— 这个组合只翻转明度、保留色相，于是白底融进面板底色，
+  蓝色 logo 还是蓝的。远程图片会让 canvas 变脏（跨域），直接跳过。底栏有开关。
+- **主题色全部来自 DSH**：host 上不再维护一套"看起来差不多"的调色板，
+  `mirrorTheme()` 把 13 个 `--dsw-*` token（含 `bg-overlay` / `state-warn` / `specific-sidebar-fill`）
+  映到面板变量上，`--tb-bg-3` 由 `color-mix` 推出来。非 DSH 环境才回退到内置色板。
 
 ## 面板顶部与 DSH 桌面版标题栏
 
@@ -256,6 +311,10 @@ Thunderbird：没有有效 stdout 时 Thunderbird 会直接起不来（踩过，
 - HTML 正文视图做了朴素清洗（去 script/style/iframe/内联事件、拦截链接跳转），不是安全沙箱。
 - 面板 HTML 每次请求现读磁盘，改完刷新即生效；路径由 `dsh-side/thunderbird-host.mjs` 里的
   `DEFAULT_UI_PATH` 推出，不用手工配。
+- **改 host 半区必须重启 DSH**：它是真实的 ESM 模块，Cordis 按模块 URL 缓存，`patchReload: live`
+  只监听 profile 的 patch 文件，不会重新 import 这个模块。client 半区（面板宿主）改完至少
+  要刷新页面。改完 host 之前可以用 `node dev/test-host.mjs` 先验证：
+  它把 host 挂到假 Cordis ctx 上，让协议替身去轮询，跑 27 条端到端断言。
 
 ## 打包 Thunderbird 插件（.xpi）
 
@@ -302,6 +361,7 @@ dsh-thunderbird/
 ├─ dev/
 │  ├─ build_xpi.py             用 zipfile 打 .xpi（正斜杠）
 │  ├─ install-extension.py     Marionette + AddonManager 零点击安装
+│  ├─ test-host.mjs            把 host 半区挂到假 Cordis ctx 上跑端到端断言
 │  ├─ probe-manifest.py        往 AddonManager 灌最小 manifest，定位 -3 的成因
 │  ├─ marionette-eval.py       在真实 Thunderbird 里跑 JS（chrome / system 沙箱）
 │  ├─ mock-thunderbird.js      无 Thunderbird 时的协议替身

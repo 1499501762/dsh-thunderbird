@@ -5,17 +5,28 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Thunderbird</title>
 <style>
+  /* Fallback palette only. Inside DSH every colour below is replaced by the
+     real --dsw-* token of the same role (see mirrorTheme), so the panel borrows
+     DSH's theme instead of imitating it. Keys prefixed dsw- fall back to these. */
   :root {
     --tb-bg: #ffffff;
     --tb-bg-1: #f7f7f9;
     --tb-bg-2: #ececf1;
-    --tb-border: #e3e3e8;
-    --tb-border-strong: #cfcfd6;
+    --tb-bg-3: #e2e2e9;
+    --tb-overlay: #ffffff;
+    --tb-border: #e5e5ea;
+    --tb-border-strong: #d2d2da;
     --tb-text: #1c1c1e;
     --tb-text-dim: #6b6b74;
     --tb-accent: #3b6ef6;
     --tb-ok: #2e9e5b;
+    --tb-warn: #b8791a;
     --tb-err: #d0453f;
+    --tb-shadow-sm: 0 1px 2px rgba(16, 18, 24, .07);
+    --tb-shadow: 0 1px 2px rgba(16, 18, 24, .05), 0 10px 30px rgba(16, 18, 24, .08);
+    --tb-r-sm: 7px;
+    --tb-r-md: 10px;
+    --tb-r-lg: 14px;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
@@ -23,13 +34,18 @@
       --tb-bg: #17181b;
       --tb-bg-1: #1e1f24;
       --tb-bg-2: #26272e;
+      --tb-bg-3: #30323a;
+      --tb-overlay: #202127;
       --tb-border: #2f3138;
-      --tb-border-strong: #3c3e47;
+      --tb-border-strong: #3f424b;
       --tb-text: #e9e9ec;
       --tb-text-dim: #9a9ba4;
       --tb-accent: #7aa2ff;
       --tb-ok: #4cc07b;
+      --tb-warn: #e0a63f;
       --tb-err: #ef6b64;
+      --tb-shadow-sm: 0 1px 2px rgba(0, 0, 0, .35);
+      --tb-shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 34px rgba(0, 0, 0, .38);
       color-scheme: dark;
     }
   }
@@ -91,9 +107,15 @@
   .item.threaded { padding-left: 24px; }
   /* Forwarded/quoted headers inside HTML mail carry their own light inline
      colours (Outlook/Thunderbird paste a white block); in a dark theme that
-     lands as a bright patch, so neutralise background and text colour. */
+     lands as a bright patch, so neutralise background and text colour. The
+     same applies to a mail's own <body bgcolor> and background-image strips. */
   html.tb-dark .content.html,
-  html.tb-dark .content.html * { background-color: transparent !important; color: inherit !important; }
+  html.tb-dark .content.html * {
+    background-color: transparent !important;
+    background-image: none !important;
+    color: inherit !important;
+    border-color: var(--tb-border-strong) !important;
+  }
   html.tb-dark .content.html a { color: var(--tb-accent) !important; }
   html.tb-dark .content.html table,
   html.tb-dark .content.html td,
@@ -122,7 +144,22 @@
   .content { white-space: pre-wrap; word-break: break-word; line-height: 1.75; }
   .content.html { white-space: normal; }
   .content.html { max-width: 920px; }
-  .content.html img { max-width: 100%; height: auto; border-radius: 6px; }
+  /* Mail images are somebody else's layout. They must not inherit the panel's
+     chrome (radius, border, background), so only sizing is imposed here. */
+  .content.html img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  /* A logo or an emoji pasted by Outlook/Foxmail is a white-background bitmap.
+     On a dark panel that reads as a white tile. The scanner in scanMailImages()
+     flags those images and this standard dark-mode filter flips lightness while
+     keeping hue, so white becomes the panel background and colours survive. */
+  html.tb-dark .content.html img.tb-invert-white {
+    filter: invert(1) hue-rotate(180deg);
+  }
   .content.html a { color: var(--tb-accent); }
   .content.html blockquote { border-left: 3px solid var(--tb-border-strong); margin-left: 0; padding-left: 12px; color: var(--tb-text-dim); }
   .content.html table { border-collapse: collapse; }
@@ -145,7 +182,9 @@
   .crow > .input { flex: 1; }
   textarea.textarea { resize: vertical; min-height: 120px; }
 
-  .foot { border-top: 1px solid var(--tb-border); padding: 6px 14px; font-size: 11px; color: var(--tb-text-dim); background: var(--tb-bg-1); display: flex; gap: 14px; flex-wrap: wrap; }
+  .foot { border-top: 1px solid var(--tb-border); padding: 6px 14px; font-size: 11px; color: var(--tb-text-dim); background: var(--tb-bg-1); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .linkbtn { background: none; border: 0; padding: 0; font: inherit; color: var(--tb-text-dim); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+  .linkbtn:hover { color: var(--tb-accent); }
   .toast { padding: 6px 14px; font-size: 12px; }
   .toast.err { color: var(--tb-err); }
   .toast.ok { color: var(--tb-ok); }
@@ -174,6 +213,16 @@
   .rlog { margin-top: 8px; font-size: 11px; color: var(--tb-text-dim); line-height: 1.7; }
   .rlog b { color: var(--tb-text); font-weight: 600; }
   .ai-body .rform { max-width: 720px; }
+  /* ---------- mail sessions ---------- */
+  .sess { border: 1px solid var(--tb-border); background: var(--tb-bg); border-radius: var(--tb-r-md); padding: 11px 13px; margin-bottom: 9px; }
+  .sess:hover { border-color: var(--tb-border-strong); }
+  .sess-head { display: flex; align-items: center; gap: 8px; }
+  .sess-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess-meta { color: var(--tb-text-dim); font-size: 11.5px; margin-top: 3px; }
+  .sess-dir { color: var(--tb-text-dim); font-size: 11px; font-family: ui-monospace, Consolas, monospace; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .sess .actions { margin-top: 8px; }
+  .chip.ok { color: var(--tb-ok); border-color: color-mix(in srgb, var(--tb-ok) 40%, transparent); }
+  .chip.warn { color: var(--tb-warn); border-color: color-mix(in srgb, var(--tb-warn) 40%, transparent); }
   /* ---------- visual pass: consistent radii, quiet surfaces, clearer focus ---------- */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--tb-border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
@@ -209,6 +258,141 @@
   .ai-typing i:nth-child(2) { animation-delay: .2s; }
   .ai-typing i:nth-child(3) { animation-delay: .4s; }
   @keyframes tbblink { 0%, 80%, 100% { opacity: .25 } 40% { opacity: 1 } }
+  /* ==================== finish pass ====================
+     Layering rule for the whole panel: columns sit on the recessed surface
+     (--tb-bg-1), the surface you actually read sits on the base (--tb-bg), and
+     anything floating gets the shadow token. Separators stay hairline. */
+  .app { background: var(--tb-bg-1); }
+
+  .bar {
+    position: relative;
+    z-index: 5;
+    gap: 7px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--tb-bg-1) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--tb-border);
+    box-shadow: none;
+  }
+  .bar .title { font-size: 13.5px; letter-spacing: -.1px; }
+  .bar .sep { display: none; }
+  .bar .btn { padding: 5px 11px; }
+
+  .input, .textarea {
+    background: var(--tb-bg);
+    border: 1px solid var(--tb-border);
+    border-radius: 999px;
+    padding: 5px 12px;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .textarea { border-radius: var(--tb-r-md); }
+  .input:focus, .textarea:focus {
+    border-color: var(--tb-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tb-accent) 18%, transparent);
+  }
+  #search {
+    padding-left: 30px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23848a99' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='M20 20l-4.2-4.2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: 10px center;
+    background-size: 13px 13px;
+  }
+
+  .btn {
+    background: transparent;
+    border: 1px solid var(--tb-border);
+    border-radius: 999px;
+    padding: 5px 11px;
+    color: var(--tb-text-dim);
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .btn:hover { background: var(--tb-bg-2); color: var(--tb-text); border-color: var(--tb-border-strong); }
+  .btn:active { background: var(--tb-bg-3); }
+  .btn.primary {
+    background: color-mix(in srgb, var(--tb-accent) 92%, transparent);
+    border-color: transparent;
+    color: #fff;
+    font-weight: 600;
+  }
+  .btn.primary:hover { background: var(--tb-accent); color: #fff; }
+  /* A toggled button, not the page's primary action: tint, never fill. */
+  .btn.on {
+    background: color-mix(in srgb, var(--tb-accent) 16%, transparent);
+    border-color: color-mix(in srgb, var(--tb-accent) 40%, transparent);
+    color: var(--tb-accent);
+    font-weight: 600;
+  }
+  .btn.on:hover { background: color-mix(in srgb, var(--tb-accent) 24%, transparent); color: var(--tb-accent); }
+
+  .folders { background: var(--tb-bg-1); border-right: 1px solid var(--tb-border); padding: 6px 8px 20px; }
+  .folder { border-radius: 999px; padding: 5px 10px; transition: background .12s, color .12s; }
+  .folder:hover { background: var(--tb-bg-2); color: var(--tb-text); }
+  .folder.active {
+    background: color-mix(in srgb, var(--tb-accent) 15%, transparent);
+    color: var(--tb-text);
+    box-shadow: none;
+  }
+  .group { padding: 12px 10px 4px; letter-spacing: .08em; font-weight: 600; opacity: .75; }
+
+  .list { background: var(--tb-bg); }
+  .item { padding: 10px 13px; border-bottom: 1px solid color-mix(in srgb, var(--tb-border) 70%, transparent); transition: background .12s; }
+  .item:hover { background: var(--tb-bg-1); box-shadow: none; }
+  .item.active { background: color-mix(in srgb, var(--tb-accent) 10%, transparent); box-shadow: inset 3px 0 0 var(--tb-accent); }
+  .item.unread { box-shadow: inset 3px 0 0 var(--tb-accent); }
+  .item.unread.active { box-shadow: inset 3px 0 0 var(--tb-accent); }
+  .item .from { font-size: 12px; }
+  .item .date { font-size: 10.5px; opacity: .85; }
+  .item .subject { font-size: 12.5px; margin-top: 3px; }
+  .thread-head {
+    background: color-mix(in srgb, var(--tb-bg-1) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--tb-border);
+    padding: 10px 13px;
+    font-size: 12.5px;
+  }
+  .thread-head:hover { background: var(--tb-bg-2); }
+  .thread-count { background: var(--tb-bg-2); border: 1px solid var(--tb-border); }
+  .avatar { width: 27px; height: 27px; box-shadow: 0 0 0 1px color-mix(in srgb, var(--tb-bg) 70%, transparent) inset; }
+
+  .reader { background: var(--tb-bg); padding: 0 22px 40px; }
+  .reader-head {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    margin: 0 -22px 20px;
+    padding: 16px 22px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--tb-border);
+    border-radius: 0;
+    background: color-mix(in srgb, var(--tb-bg) 90%, transparent);
+    backdrop-filter: blur(12px);
+  }
+  .reader-head h1 { font-size: 18px; letter-spacing: -.2px; }
+  .reader-head .meta { font-size: 11.5px; line-height: 1.75; }
+  .content { line-height: 1.78; font-size: 13.5px; }
+  .content { padding-top: 2px; }
+  .content.html { font-size: 13.5px; }
+  .split::before { background: transparent; transition: background .12s; }
+  .split:hover::before, .split.dragging::before { background: var(--tb-accent); }
+
+  .ai, #rules, #sessions { box-shadow: 0 -10px 30px rgba(0, 0, 0, .16); }
+  .ai-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: color-mix(in srgb, var(--tb-bg-1) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--tb-border);
+    padding: 10px 16px;
+  }
+  .ai-title { font-size: 13px; }
+  .ai-body { padding: 12px 16px 18px; }
+
+  .foot { background: var(--tb-bg-1); border-top: 1px solid var(--tb-border); padding: 5px 14px; }
+  .toast { background: var(--tb-bg-2); border-bottom: 1px solid var(--tb-border); }
+  .toast.err { background: color-mix(in srgb, var(--tb-err) 16%, var(--tb-bg-1)); }
+  .toast.ok { background: color-mix(in srgb, var(--tb-ok) 14%, var(--tb-bg-1)); }
+  .empty { color: var(--tb-text-dim); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -223,6 +407,7 @@
     <button class="btn" id="btn-search">搜索</button>
     <button class="btn" id="btn-refresh">刷新</button>
     <button class="btn" id="btn-rules">分类规则</button>
+    <button class="btn" id="btn-sessions">会话</button>
     <button class="btn" id="btn-group" title="按主题聚合">聚合</button>
     <button class="btn" id="btn-ai-sum" hidden>总结已选</button>
     <button class="btn" id="btn-ai-ask" hidden>提问已选</button>
@@ -290,6 +475,17 @@
     <div class="ai-body" id="rules-body"></div>
   </div>
 
+  <div class="ai" id="sessions" hidden>
+    <div class="ai-head">
+      <span class="ai-title">邮件会话</span>
+      <span class="ai-model" id="sess-count"></span>
+      <span class="grow"></span>
+      <button class="btn" id="sess-refresh">刷新</button>
+      <button class="btn" id="sess-close">关闭</button>
+    </div>
+    <div class="ai-body" id="sess-body"></div>
+  </div>
+
   <div class="selmenu" id="selmenu" hidden>
     <button data-act="ask">问 AI</button>
     <button data-act="summarize">总结</button>
@@ -314,6 +510,9 @@
     <span id="f-status">等待 Thunderbird 连接</span>
     <span id="f-unread">未读 0</span>
     <span id="f-handled">已处理命令 0</span>
+    <span class="grow"></span>
+    <button class="linkbtn" id="f-imgfit" title="邮件里白底的 logo / emoji 在暗色下会变成白色方块，开启后按亮度翻转">图片暗色适配：开</button>
+    <button class="linkbtn" id="f-keys" title="j/k 上下封 · r 回复 · s 星标 · u 已读 · S 总结 · / 搜索 · g 聚合 · Esc 关面板">快捷键</button>
     <span class="code">/api/thunderbird/poll</span>
   </div>
 </div>
@@ -335,6 +534,8 @@ var state = {
   seq: 0,
   handled: 0,
   checked: [],
+  invertMailImages: true,
+  sessions: { list: [], byKey: {}, root: '', error: '', dir: '' },
   ai: { open: false, busy: false, text: '', error: '', model: '', title: '', ask: null },
 }
 
@@ -738,6 +939,22 @@ function renderReader () {
   actions.appendChild(button('AI 回复草稿', function () { runAi('reply') }))
   actions.appendChild(button('AI 分类建议', function () { aiClassifyCurrent() }))
   actions.appendChild(button('用这封建规则', function () { ruleFromCurrent() }))
+  var thread = currentThread()
+  var bound = thread ? sessionFor(thread.folderId, thread.subject) : null
+  actions.appendChild(button(bound ? (bound.sessionId ? '打开 DSH 会话' : '完成挂载') : '建 DSH 会话', function () {
+    if (bound && bound.sessionId) {
+      dshCall('session/open', { sessionId: bound.sessionId }).catch(function (error) { setError(error.message) })
+    } else if (bound) {
+      bindThread(thread)
+    } else {
+      $('sessions').hidden = false
+      renderSessions()
+      bindThread(thread)
+    }
+  }))
+  if (bound) {
+    actions.appendChild(button('同步到会话', function () { syncThread(bound) }))
+  }
   // Tint the AI actions and drop a divider after them, so "what the model does"
   // reads as one group and "what touches the message" as another.
   for (var ai2 = 0; ai2 < actions.children.length; ai2++) {
@@ -831,6 +1048,7 @@ function renderReader () {
       var anchor = event.target && event.target.closest ? event.target.closest('a') : null
       if (anchor) event.preventDefault()
     })
+    scanMailImages(content)
   } else {
     content.className = 'content'
     content.textContent = state.body.text || '(这封邮件只有 HTML 正文，点上方的 HTML 按钮查看原始排版)'
@@ -898,6 +1116,60 @@ function loadInlineImages (messageId) {
     state.inlineImagesLoading = null
     state.inlineImages = { messageId: messageId, map: {} }
   })
+}
+
+// A white background painted INSIDE a bitmap cannot be removed by CSS. Such
+// images are almost always a logo or a pasted emoji, so classify each one by
+// sampling its border: when the frame is nearly all white the picture is a tile
+// on a white canvas, and the dark theme flips its lightness (tb-invert-white).
+// Remote images taint the canvas; those are simply left alone.
+function scanMailImages (root) {
+  if (state.invertMailImages === false) return
+  var images = root.querySelectorAll('img')
+  for (var i = 0; i < images.length; i++) classifyMailImage(images[i])
+}
+
+function classifyMailImage (img) {
+  if (img.dataset.tbScanned === '1') return
+  img.dataset.tbScanned = '1'
+  var run = function () {
+    try {
+      if (!img.naturalWidth || !img.naturalHeight) return
+      var n = 12
+      var canvas = document.createElement('canvas')
+      canvas.width = n
+      canvas.height = n
+      var ctx = canvas.getContext('2d')
+      ctx.drawImage(img, 0, 0, n, n)
+      var pixels = ctx.getImageData(0, 0, n, n).data
+      var light = 0
+      var edge = 0
+      var edgeLight = 0
+      for (var y = 0; y < n; y++) {
+        for (var x = 0; x < n; x++) {
+          var offset = (y * n + x) * 4
+          var alpha = pixels[offset + 3] / 255
+          // a transparent pixel shows the panel through, which is already fine
+          var isLight = alpha < 0.5
+          if (!isLight) {
+            var lum = (0.2126 * pixels[offset] + 0.7152 * pixels[offset + 1] + 0.0722 * pixels[offset + 2]) / 255
+            isLight = lum > 0.86
+          }
+          if (isLight) light++
+          if (x === 0 || y === 0 || x === n - 1 || y === n - 1) {
+            edge++
+            if (isLight) edgeLight++
+          }
+        }
+      }
+      var total = n * n
+      if (light / total > 0.5 && edgeLight / Math.max(1, edge) > 0.7) {
+        img.classList.add('tb-invert-white')
+      }
+    } catch (error) { /* tainted canvas: a remote image, leave it as sent */ }
+  }
+  if (img.complete) run()
+  else img.addEventListener('load', run, { once: true })
 }
 
 function button (label, handler) {
@@ -1230,6 +1502,7 @@ function runAi (action, opts) {
     else {
       state.ai.text = out.text
       state.ai.model = out.model || ''
+      recordAiInSession(action, out.text, out.model || '', payload.instruction || '')
       // Keep the input alive so the next question can build on this answer.
       state.ai.ask = {
         action: 'ask',
@@ -1462,31 +1735,46 @@ function mirrorTheme () {
     // Only the caption buttons need clearance; read their width, not the strip height.
     var insetRight = cs.getPropertyValue('--dsh-titlebar-safe-inset-right')
     document.documentElement.style.setProperty('--tb-inset-right', (insetRight && insetRight.trim()) || '0px')
-    var names = [
-      '--dsw-alias-bg-base', '--dsw-alias-bg-layer-1', '--dsw-alias-bg-layer-2',
-      '--dsw-alias-border-l1', '--dsw-alias-border-l2', '--dsw-alias-label-primary',
-      '--dsw-alias-label-secondary', '--dsw-alias-brand-primary',
-      '--dsw-alias-state-success-primary', '--dsw-alias-state-error-primary',
-      '--dsw-specific-sidebar-fill',
-    ]
+    // Every colour the panel paints comes from DSH's own theme tokens, so the
+    // mail panel is the same surface as the app around it rather than a
+    // lookalike palette that drifts when the user changes theme.
     var map = {
-      '--dsw-alias-bg-base': '--tb-bg',
-      '--dsw-alias-bg-layer-1': '--tb-bg-1',
-      '--dsw-alias-bg-layer-2': '--tb-bg-2',
-      '--dsw-alias-border-l1': '--tb-border',
-      '--dsw-alias-border-l2': '--tb-border-strong',
-      '--dsw-alias-label-primary': '--tb-text',
-      '--dsw-alias-label-secondary': '--tb-text-dim',
-      '--dsw-alias-brand-primary': '--tb-accent',
-      '--dsw-alias-state-success-primary': '--tb-ok',
-      '--dsw-alias-state-error-primary': '--tb-err',
+      '--dsw-alias-bg-base': ['--tb-bg'],
+      '--dsw-alias-bg-layer-1': ['--tb-bg-1'],
+      '--dsw-alias-bg-layer-2': ['--tb-bg-2'],
+      '--dsw-alias-bg-overlay': ['--tb-overlay'],
+      '--dsw-specific-sidebar-fill': ['--tb-sidebar'],
+      '--dsw-alias-border-l1': ['--tb-border'],
+      '--dsw-alias-border-l2': ['--tb-border-strong'],
+      '--dsw-alias-label-primary': ['--tb-text'],
+      '--dsw-alias-label-secondary': ['--tb-text-dim'],
+      '--dsw-alias-brand-primary': ['--tb-accent'],
+      '--dsw-alias-state-success-primary': ['--tb-ok'],
+      '--dsw-alias-state-warn-primary': ['--tb-warn'],
+      '--dsw-alias-state-error-primary': ['--tb-err'],
     }
+    var names = Object.keys(map)
+    var seen = {}
     for (var i = 0; i < names.length; i++) {
       var value = cs.getPropertyValue(names[i])
       if (!value || !value.trim()) continue
-      document.documentElement.style.setProperty(names[i], value.trim())
-      if (map[names[i]]) document.documentElement.style.setProperty(map[names[i]], value.trim())
+      value = value.trim()
+      document.documentElement.style.setProperty(names[i], value)
+      var targets = map[names[i]]
+      for (var t = 0; t < targets.length; t++) {
+        document.documentElement.style.setProperty(targets[t], value)
+        seen[targets[t]] = true
+      }
     }
+    // The sidebar fill is the app's title-row colour; prefer the layered surface
+    // when DSH exposes it, and fall back to the sidebar token otherwise.
+    if (!seen['--tb-bg-1'] && seen['--tb-sidebar']) {
+      document.documentElement.style.setProperty('--tb-bg-1', 'var(--tb-sidebar)')
+    }
+    // One derived surface for hover/active, so it always sits between layer-2
+    // and the text colour of whichever theme is active.
+    document.documentElement.style.setProperty(
+      '--tb-bg-3', 'color-mix(in srgb, var(--tb-bg-2) 82%, var(--tb-text) 10%)')
     var probed = document.documentElement.style.getPropertyValue('--tb-bg')
     var dark = probed
       ? isDarkColor(probed)
@@ -1811,9 +2099,355 @@ function aiClassifyCurrent () {
   })
 }
 
+// --------------------------------------------------------------- DSH 会话桥
+//
+// The panel is an iframe. Only the client half (which runs inside the shell)
+// can reach DSH's own workspace / session services, so every session action
+// travels over postMessage and comes back with the ids to record here.
+
+var dsh = { seq: 0, pending: {} }
+
+window.addEventListener('message', function (event) {
+  if (event.origin !== location.origin) return
+  var msg = event.data
+  if (!msg || msg.from !== 'dsh-thunderbird' || !msg.id) return
+  var settle = dsh.pending[msg.id]
+  if (!settle) return
+  delete dsh.pending[msg.id]
+  settle(msg)
+})
+
+function dshCall (type, payload, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    if (window.parent === window) {
+      reject(new Error('面板没有嵌在 DSH 里，无法操作 DSH 会话'))
+      return
+    }
+    var id = 'tbp-' + (++dsh.seq) + '-' + Date.now().toString(36)
+    var timer = setTimeout(function () {
+      delete dsh.pending[id]
+      reject(new Error('DSH 没有响应（' + type + '）'))
+    }, timeoutMs || 30000)
+    dsh.pending[id] = function (msg) {
+      clearTimeout(timer)
+      if (msg.ok) resolve(msg.result)
+      else reject(new Error(msg.error || 'DSH 调用失败'))
+    }
+    var out = { to: 'dsh-thunderbird', id: id, type: type }
+    for (var key in payload) out[key] = payload[key]
+    window.parent.postMessage(out, location.origin)
+  })
+}
+
+// One aggregated subject == one workspace directory == one DSH session.
+var sessKeyOf = function (folderId, subject) {
+  return String(folderId || '') + '\u0000' + normSubject(subject)
+}
+
+function sessionFor (folderId, subject) {
+  return state.sessions.byKey[sessKeyOf(folderId, subject)] || null
+}
+
+function currentThread () {
+  if (!state.current) return null
+  var subject = normSubject(state.current.subject)
+  var messages = state.messages.filter(function (m) { return normSubject(m.subject) === subject })
+  if (!messages.length) messages = [state.current]
+  return { subject: subject, folderId: state.folderId || '', messages: messages }
+}
+
+function loadSessions () {
+  return fetch('/api/thunderbird/session/list', { cache: 'no-store' })
+    .then(function (res) {
+      if (!res.ok) {
+        throw new Error('会话接口返回 HTTP ' + res.status + '（host 半区还没加载这段代码，需要重启 DSH）')
+      }
+      return res.json().catch(function () { return null })
+    })
+    .then(function (out) {
+      var list = (out && out.sessions) || []
+      var byKey = {}
+      for (var i = 0; i < list.length; i++) {
+        var record = list[i]
+        byKey[sessKeyOf(record.folderId, record.subject)] = record
+      }
+      state.sessions.list = list
+      state.sessions.byKey = byKey
+      state.sessions.root = (out && out.root) || ''
+      state.sessions.error = ''
+      return list
+    })
+    .catch(function (error) {
+      state.sessions.error = String((error && error.message) || error)
+      return []
+    })
+}
+
+function postJson (url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(function (res) { return res.json() })
+}
+
+// The host builds thread.md from live mail, then DSH turns the directory into a
+// workspace and connects a session to it; finally the ids are stored on the
+// record so the panel can reopen that same session later.
+function bindThread (thread) {
+  if (!thread) { setError('先选一封邮件'); return Promise.resolve(null) }
+  setNotice('正在把「' + thread.subject + '」挂到 DSH 会话…')
+  var ids = thread.messages.map(function (m) { return m.id })
+  return postJson('/api/thunderbird/session/create', {
+    subject: thread.subject,
+    folderId: thread.folderId,
+    messageIds: ids,
+  }).then(function (created) {
+    if (!created || created.ok !== true) throw new Error((created && created.error) || '导出邮件失败')
+    var record = created.session
+    return dshCall('session/create', { dir: record.dir, title: thread.subject }, 90000).then(function (bound) {
+      return postJson('/api/thunderbird/session/attach', {
+        key: record.key,
+        workspaceId: bound.workspaceId,
+        sessionId: bound.sessionId,
+      }).then(function (attached) {
+        return loadSessions().then(function () {
+          setNotice('已绑定 DSH 会话 · ' + thread.subject)
+          renderSessions()
+          renderReader()
+          return (attached && attached.session) || record
+        })
+      })
+    })
+  }).catch(function (error) {
+    setError(String((error && error.message) || error))
+    return null
+  })
+}
+
+function syncThread (record) {
+  var thread = currentThread()
+  if (!thread) return
+  setNotice('正在重新同步「' + record.subject + '」…')
+  postJson('/api/thunderbird/session/sync', {
+    key: record.key,
+    messageIds: thread.messages.map(function (m) { return m.id }),
+  }).then(function (out) {
+    if (!out || out.ok !== true) throw new Error((out && out.error) || '同步失败')
+    return loadSessions()
+  }).then(function () {
+    setNotice('已同步最新邮件到会话目录')
+    renderSessions()
+  }).catch(function (error) { setError(String((error && error.message) || error)) })
+}
+
+function removeThreadSession (record) {
+  postJson('/api/thunderbird/session/remove', { key: record.key }).then(function () {
+    return loadSessions()
+  }).then(function () {
+    setNotice('已解除绑定（会话和目录都保留）')
+    renderSessions()
+    renderReader()
+  }).catch(function (error) { setError(String((error && error.message) || error)) })
+}
+
+// Every AI run on a bound thread is appended to the thread's own log, so the
+// record survives panel reloads and is readable from the session directory.
+function recordAiInSession (action, text, model, question) {
+  var thread = currentThread()
+  if (!thread) return
+  var record = sessionFor(thread.folderId, thread.subject)
+  if (!record) return
+  postJson('/api/thunderbird/session/log', {
+    key: record.key,
+    action: action,
+    model: model || '',
+    question: question || '',
+    text: text || '',
+  }).then(function () {
+    record.aiCount = (record.aiCount || 0) + 1
+    record.lastAction = action
+    if (!$('sessions').hidden) renderSessions()
+  }).catch(function () { /* the record is best-effort */ })
+}
+
+function showSessionFile (record, file) {
+  fetch('/api/thunderbird/session/file?key=' + encodeURIComponent(record.key) + '&file=' + file, { cache: 'no-store' })
+    .then(function (res) { return res.json() })
+    .then(function (out) {
+      state.ai.open = true
+      state.ai.busy = false
+      state.ai.error = out && out.ok ? '' : ((out && out.error) || '读不到文件')
+      state.ai.text = out && out.ok ? out.text : ''
+      state.ai.model = out && out.dir ? out.dir : ''
+      state.ai.title = (file === 'ai-log.md' ? 'AI 记录' : '邮件线') + ' · ' + record.subject
+      state.ai.ask = null
+      $('sessions').hidden = true
+      renderAi()
+    })
+    .catch(function (error) { setError(String((error && error.message) || error)) })
+}
+
+function sessionRow (record) {
+  var row = document.createElement('div')
+  row.className = 'sess'
+
+  var head = document.createElement('div')
+  head.className = 'sess-head'
+  var name = document.createElement('div')
+  name.className = 'sess-name'
+  name.textContent = record.subject || '(无主题)'
+  head.appendChild(name)
+  var badge = document.createElement('span')
+  badge.className = 'chip ' + (record.sessionId ? 'ok' : 'warn')
+  badge.textContent = record.sessionId ? '已挂到 DSH' : '待完成挂载'
+  head.appendChild(badge)
+  row.appendChild(head)
+
+  var meta = document.createElement('div')
+  meta.className = 'sess-meta'
+  var bits = []
+  bits.push((record.messageCount || 0) + ' 封邮件')
+  if (record.aiCount) bits.push(record.aiCount + ' 次 AI 记录')
+  if (record.syncedAt) bits.push('同步于 ' + fmtDate(record.syncedAt))
+  meta.textContent = bits.join(' · ')
+  row.appendChild(meta)
+
+  var dir = document.createElement('div')
+  dir.className = 'sess-dir'
+  dir.textContent = record.dir || ''
+  dir.title = record.dir || ''
+  row.appendChild(dir)
+
+  var actions = document.createElement('div')
+  actions.className = 'actions'
+  if (record.sessionId) {
+    actions.appendChild(button('打开会话', function () {
+      dshCall('session/open', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
+    }))
+    actions.appendChild(button('右侧打开', function () {
+      dshCall('session/open-right', { sessionId: record.sessionId }).catch(function (error) { setError(error.message) })
+    }))
+  } else {
+    actions.appendChild(button('完成挂载', function () { bindThread({ subject: record.subject, folderId: record.folderId, messages: [] }) }))
+  }
+  actions.appendChild(button('重同步', function () { syncThread(record) }))
+  actions.appendChild(button('邮件线', function () { showSessionFile(record, 'thread.md') }))
+  actions.appendChild(button('AI 记录', function () { showSessionFile(record, 'ai-log.md') }))
+  actions.appendChild(button('解除', function () { removeThreadSession(record) }))
+  row.appendChild(actions)
+  return row
+}
+
+function renderSessions () {
+  $('sess-count').textContent = state.sessions.list.length
+    ? state.sessions.list.length + ' 条邮件线'
+    : '还没有绑定'
+  var host = $('sess-body')
+  host.innerHTML = ''
+  if (state.sessions.error) {
+    var bad = document.createElement('div')
+    bad.className = 'toast err'
+    bad.textContent = '读不到会话记录：' + state.sessions.error
+    host.appendChild(bad)
+    return
+  }
+  if (!state.sessions.list.length) {
+    var empty = document.createElement('div')
+    empty.className = 'empty'
+    empty.innerHTML = '<p>还没有邮件线绑定到 DSH。</p>'
+      + '<p>在右侧打开一封邮件，点「建 DSH 会话」：面板会把这条主题线导出成一个目录，'
+      + 'DSH 把它注册成工作区并连上一个会话，之后的 AI 结果都会记在那条线下面。</p>'
+    host.appendChild(empty)
+    if (state.sessions.root) {
+      var root = document.createElement('div')
+      root.className = 'meta'
+      root.textContent = '会话目录根：' + state.sessions.root
+      host.appendChild(root)
+    }
+    return
+  }
+  if (state.sessions.root) {
+    var head = document.createElement('div')
+    head.className = 'rlog'
+    head.textContent = '会话目录根：' + state.sessions.root
+    host.appendChild(head)
+  }
+  for (var i = 0; i < state.sessions.list.length; i++) host.appendChild(sessionRow(state.sessions.list[i]))
+}
+
+// Keyboard: mail clients are keyboard-driven, and the panel is a whole mail
+// client. Shortcuts never fire while a field or an open pane owns the keyboard.
+function typingTarget (target) {
+  if (!target) return false
+  var tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable === true
+}
+
+function moveSelection (delta) {
+  if (!state.messages.length) return
+  var at = state.current ? state.messages.findIndex(function (m) { return m.id === state.current.id }) : -1
+  var next = at < 0 ? 0 : Math.min(Math.max(at + delta, 0), state.messages.length - 1)
+  var message = state.messages[next]
+  if (!message || (state.current && message.id === state.current.id)) return
+  state.expanded[normSubject(message.subject)] = true
+  renderList()
+  openMessage(message)
+  var rows = $('list').querySelectorAll('.item')
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].classList.contains('active')) { rows[i].scrollIntoView({ block: 'nearest' }); break }
+  }
+}
+
+document.addEventListener('keydown', function (event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return
+  if (typingTarget(event.target)) {
+    if (event.key === 'Escape' && event.target.blur) event.target.blur()
+    return
+  }
+  var paneOpen = !$('ai').hidden || !$('rules').hidden || !$('sessions').hidden || !$('compose').hidden
+  if (event.key === 'Escape') {
+    if (paneOpen) {
+      state.ai.open = false
+      $('rules').hidden = true
+      $('sessions').hidden = true
+      $('compose').hidden = true
+      renderAi()
+    }
+    return
+  }
+  if (paneOpen) return
+  if (event.key === '/') { event.preventDefault(); $('search').focus(); return }
+  if (event.key === 'j' || event.key === 'ArrowDown') { event.preventDefault(); moveSelection(1); return }
+  if (event.key === 'k' || event.key === 'ArrowUp') { event.preventDefault(); moveSelection(-1); return }
+  if (!state.current) return
+  if (event.key === 'r') { event.preventDefault(); startCompose(state.current) }
+  else if (event.key === 's') { event.preventDefault(); toggleFlag() }
+  else if (event.key === 'u') { event.preventDefault(); setRead(!state.current.read) }
+  else if (event.key === 'g') { event.preventDefault(); $('btn-group').click() }
+  else if (event.key === 'S') { event.preventDefault(); runAi('summarize') }
+})
+
 $('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
 $('btn-search').onclick = runSearch
 $('search').addEventListener('keydown', function (event) { if (event.key === 'Enter') runSearch() })
+
+// Mail images keep whatever layout their sender chose; the single global switch
+// is the white-tile treatment for dark mode.
+try { state.invertMailImages = localStorage.getItem('dsh-tb-imgfit') !== '0' } catch (error) { /* no storage */ }
+var syncImgFit = function () {
+  $('f-imgfit').textContent = '图片暗色适配：' + (state.invertMailImages ? '开' : '关')
+}
+$('f-imgfit').onclick = function () {
+  state.invertMailImages = !state.invertMailImages
+  try { localStorage.setItem('dsh-tb-imgfit', state.invertMailImages ? '1' : '0') } catch (error) { /* ignore */ }
+  syncImgFit()
+  renderReader()
+}
+syncImgFit()
+$('f-keys').onclick = function () {
+  setNotice('j / k 上下封邮件 · r 回复 · s 星标 · u 已读 · S 总结 · / 搜索 · g 聚合开关 · Esc 关掉打开的面板')
+}
 $('btn-compose').onclick = function () { startCompose(null) }
 $('btn-cancel').onclick = function () { $('compose').hidden = true }
 $('btn-send').onclick = sendMail
@@ -1822,12 +2456,24 @@ $('btn-ai-draft').onclick = function () {
   openAsk('draft', bodyTextForAi(), '想写什么？（例如：催一下上个月的发票，语气客气）', 'AI 代写')
 }
 $('btn-rules').onclick = function () { if ($('rules').hidden) openRules(); else $('rules').hidden = true }
+$('btn-sessions').onclick = function () {
+  if ($('sessions').hidden) {
+    $('sessions').hidden = false
+    $('rules').hidden = true
+    renderSessions()
+    loadSessions().then(renderSessions)
+  } else {
+    $('sessions').hidden = true
+  }
+}
+$('sess-close').onclick = function () { $('sessions').hidden = true }
+$('sess-refresh').onclick = function () { loadSessions().then(renderSessions) }
 $('btn-group').onclick = function () {
   state.group = !state.group
-  this.classList.toggle('primary', state.group)
+  this.classList.toggle('on', state.group)
   renderList()
 }
-if (state.group === undefined || state.group) $('btn-group').classList.add('primary')
+if (state.group === undefined || state.group) $('btn-group').classList.add('on')
 
 // Infinite scroll: page in the next chunk when the list nears its end.
 $('list').addEventListener('scroll', function () {
@@ -1938,6 +2584,9 @@ wireSplitter('split-b', 'list')
 mirrorTheme()
 render()
 pollStatus()
+// Pull the durable mail-session records once at boot, so a thread already shows
+// its bound state before the user opens anything.
+loadSessions().then(function () { if (!$('sessions').hidden) renderSessions() })
 setInterval(mirrorTheme, 4000)
 setInterval(pollStatus, 5000)
 setInterval(pollEvents, 8000)
