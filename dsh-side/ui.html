@@ -66,22 +66,14 @@
      pointer events for its full width, and an iframe cannot opt out with
      no-drag. So the bar's surface is painted from y=0 (no visual gap) while its
      controls start below the strip. The strip's own height is auto-detected. */
-  /* The window title bar owns the top strip (--tb-inset-top), and the frame does
-     not reach into it. When a strip IS reserved, the identity chips are drawn
-     inside it and read as part of the title row; when there is none, the strip
-     falls back to a normal row so the chips can never vanish — a zero-height
-     strip silently ate them. */
-  .tb-strip {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    height: max(var(--tb-inset-top, 0px), 30px);
-    padding: 0 calc(14px + var(--tb-inset-right, 0px)) 0 14px;
-    overflow: hidden;
-    background: var(--tb-bg-1);
-  }
-  .bar { padding-top: 0; padding-right: calc(14px + var(--tb-inset-right, 0px)); }
+  /* The identity chips are gone. They were the panel saying "Thunderbird /
+     peterhan@… / peterhan@…" one row below a window title bar that already says
+     Thunderbird, and the account names are the folder tree's own group headers.
+     The frame cannot paint into that title bar (its top is 43px into the page),
+     so the only honest way to stop the duplicate was to drop it.
+     The bar takes the reserved title strip instead, so its buttons clear the
+     window drag region where one exists. */
+  .bar { padding-top: var(--tb-inset-top, 0px); padding-right: calc(14px + var(--tb-inset-right, 0px)); }
   .split { width: 7px; flex: none; cursor: col-resize; position: relative; }
   .split::before { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--tb-border); transition: background .12s; }
   .split:hover::before, .split.dragging::before { background: var(--tb-accent); }
@@ -93,7 +85,6 @@
      nowrap, not wrap: the bar must overflow so the script can see it does and
      move buttons into 「⋯」. A wrapping bar silently grew a second row instead. */
   .bar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--tb-bg-1); border-bottom: 1px solid var(--tb-border); flex-wrap: nowrap; }
-  .chips { color: var(--tb-text-dim); font-size: 11px; display: flex; gap: 6px; flex-wrap: nowrap; overflow: hidden; flex: 0 1 auto; min-width: 0; }
   .chip { background: var(--tb-bg-2); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
   .sep { width: 1px; align-self: stretch; background: var(--tb-border); }
   /* The spacer takes the slack; everything else keeps its natural width so the
@@ -1074,7 +1065,6 @@
 </head>
 <body>
 <div class="app">
-  <div class="tb-strip" id="tb-strip"><span class="chips" id="chips"></span></div>
   <div class="bar" id="bar">
     <input class="input" id="search" placeholder="搜索邮件…">
     <button class="btn" id="btn-search">搜索</button>
@@ -1495,17 +1485,6 @@ function setError (message) {
 
 function setNotice (message) {
   showToast('toast-ok', message)
-}
-
-function renderChips () {
-  $('chips').innerHTML = ''
-  for (var i = 0; i < state.accounts.length; i++) {
-    var chip = document.createElement('span')
-    chip.className = 'chip'
-    chip.textContent = state.accounts[i].name
-    $('chips').appendChild(chip)
-  }
-  layoutBar()
 }
 
 // ------------------------------------------------------- 顶栏自适应（更多 / 搜索框）
@@ -2436,7 +2415,6 @@ function renderStatus () {
 
 function render () {
   renderStatus()
-  renderChips()
   renderFolders()
   renderList()
   renderReader()
