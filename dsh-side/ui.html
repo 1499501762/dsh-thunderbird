@@ -2258,7 +2258,10 @@ function captionInset (doc, win, hosts) {
   var declared = safeRightInset(win, doc, hosts)
   if (isFinite(declared) && declared > 0) return declared
 
-  var frame = win.frameElement
+  // The panel's OWN frame is the right edge to measure against — in the
+  // right-sidebar case the shell window's frameElement is null, and window.top's
+  // width would over-reserve.
+  var frame = window.frameElement
   var panelRight = win.innerWidth
   try {
     if (frame) panelRight = frame.getBoundingClientRect().right
@@ -2299,9 +2302,11 @@ function captionInset (doc, win, hosts) {
 
 function mirrorTheme () {
   try {
-    if (!window.parent || window.parent === window) return
-    var doc = window.parent.document
-    var win = window.parent
+    // The tokens live on the SHELL document, which is window.top whether the panel
+    // is the centre-column view (one frame down) or a right-sidebar tab (two).
+    var win = window.top || window.parent
+    if (!win || win === window) return
+    var doc = win.document
     var hosts = themeHosts(doc)
     // DSH Desktop reserves the top strip for the native window drag region; its
     // no-drag opt-out is a CSS rule in the parent document, so it cannot reach
@@ -2718,7 +2723,11 @@ window.addEventListener('message', function (event) {
 
 function dshCall (type, payload, timeoutMs) {
   return new Promise(function (resolve, reject) {
-    if (window.parent === window) {
+    // Post to the shell itself, not to the immediate parent: as a right-sidebar
+    // tab the panel sits one frame deeper, so window.parent would be that
+    // intermediate frame rather than the client half's window.
+    var shell = window.top || window.parent
+    if (!shell || shell === window) {
       reject(new Error('面板没有嵌在 DSH 里，无法操作 DSH 会话'))
       return
     }
@@ -2734,7 +2743,7 @@ function dshCall (type, payload, timeoutMs) {
     }
     var out = { to: 'dsh-thunderbird', id: id, type: type }
     for (var key in payload) out[key] = payload[key]
-    window.parent.postMessage(out, location.origin)
+    shell.postMessage(out, location.origin)
   })
 }
 

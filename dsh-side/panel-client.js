@@ -78,6 +78,7 @@ window.__ModuleLoader__.load({
     var observer = null
     var open = false
     var probeTimer = null
+    var activeCtx = null
 
     function el (tag, attrs, kids) {
       var node = document.createElement(tag)
@@ -128,13 +129,33 @@ window.__ModuleLoader__.load({
       return node.parentElement === root ? node : null
     }
 
+    // ---- native right sidebar -------------------------------------------------
+    // dsh-better-sidebar publishes `ctx.betterSidebar`, and an open carrying a
+    // `url` is routed to DSH's native right Sidebar. That makes the mail panel a
+    // real tab beside the conversation instead of a centre-column view that hides
+    // it — which is the whole point of a side panel.
+    function openInRightBar () {
+      var sidebar = serviceOf(activeCtx, 'betterSidebar')
+      if (sidebar === undefined || typeof sidebar.openTab !== 'function') return false
+      try {
+        sidebar.openTab({
+          type: 'browser',
+          url: location.origin + UI_URL + '?panel=right',
+          title: LABEL,
+        })
+        return true
+      } catch (error) {
+        return false
+      }
+    }
+
     function createEntry () {
       var entry = el('button', {
         type: 'button',
         role: 'button',
         'data-dsh-no-drag': '',
         'aria-label': LABEL,
-        title: LABEL,
+        title: LABEL + '（在右侧边栏打开）',
       }, [
         el('span', { class: 'dshTbIcon', html: ICON_MAIL }),
         el('span', { class: 'dshTbLabel', text: LABEL }),
@@ -143,8 +164,11 @@ window.__ModuleLoader__.load({
       entry.addEventListener('click', function (event) {
         event.preventDefault()
         event.stopPropagation()
-        if (open) closePanel()
-        else openPanel()
+        if (open) { closePanel(); return }
+        // Preferred home is the native right sidebar; the centre-column view is
+        // the fallback for a deployment without that plugin.
+        if (openInRightBar()) return
+        openPanel()
       })
       return entry
     }
@@ -507,8 +531,14 @@ window.__ModuleLoader__.load({
     function onWindowMessage (ctx) {
       return function (event) {
         if (event.origin !== HOST_ORIGIN) return
-        // Only the mail panel's own frame is accepted, never a random embedder.
-        if (frameEl === null || event.source !== frameEl.contentWindow) return
+        // Accept the mail panel's frame wherever it is mounted: the centre-column
+        // view, or a native right-sidebar tab (which nests it one level deeper).
+        // Same origin plus the panel's own path is the guard — never just "any
+        // embedder on this page".
+        var sourceWindow = event.source
+        var sourcePath = ''
+        try { sourcePath = String((sourceWindow && sourceWindow.location && sourceWindow.location.pathname) || '') } catch (error) { sourcePath = '' }
+        if (sourcePath.indexOf(UI_URL) !== 0) return
         var msg = event.data
         if (!msg || msg.to !== 'dsh-thunderbird' || typeof msg.id !== 'string') return
 
@@ -633,6 +663,7 @@ window.__ModuleLoader__.load({
     }
 
     function apply (ctx) {
+      activeCtx = ctx
       try { injectCss() } catch (error) { /* styles are optional */ }
       document.addEventListener('dsh-panel-activate', onPanelActivate)
       document.addEventListener('click', onDocumentClick, true)
