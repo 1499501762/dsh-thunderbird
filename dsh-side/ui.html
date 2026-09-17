@@ -2679,6 +2679,9 @@ function aiAskSelection () {
 }
 
 function onReaderUp (event) {
+  // A right-click also ends with a mouseup, and it is about to open the context
+  // menu — showing the AI selection menu at the same time stacks two panels.
+  if (event && event.button === 2) { hideSelMenu(); return }
   var sel = window.getSelection ? window.getSelection() : null
   var text = sel ? String(sel).trim() : ''
   if (!text || text.length < 2) { hideSelMenu(); return }
@@ -2686,6 +2689,7 @@ function onReaderUp (event) {
   var node = anchor && anchor.nodeType === 3 ? anchor.parentNode : anchor
   var content = $('reader').querySelector('.content')
   if (!content || !node || !content.contains(node)) { hideSelMenu(); return }
+  hideContextMenu()
   selectionText = text
   var menu = $('selmenu')
   menu.hidden = false
@@ -3179,6 +3183,7 @@ function hideContextMenu () {
 }
 
 function showContextMenu (event, kind, messageId, target) {
+  hideSelMenu()
   ctxState.kind = kind
   ctxState.messageId = messageId || null
   ctxState.target = target || null
