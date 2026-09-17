@@ -554,10 +554,31 @@ window.__ModuleLoader__.load({
         }
 
         if (msg.type === 'panel/open-ai') {
-          var opened = openAiTab()
-          replyTo(event.source, msg.id, opened
-            ? { ok: true, result: true }
-            : { ok: false, error: '没有可用的右侧边栏插件（dsh-better-sidebar）' })
+          var sidebar = serviceOf(ctx, 'betterSidebar')
+          if (sidebar === undefined) {
+            replyTo(event.source, msg.id, { ok: false, error: 'ctx.get("betterSidebar") 返回 undefined' })
+            return
+          }
+          // Report what the registry actually says, not just success/failure: a
+          // tab type that exists but is DISABLED, and a service whose builtin ids
+          // differ from the assumption, look identical from the panel side.
+          var facts = 'version=' + String(sidebar.version || '?')
+            + ' features=' + String((sidebar.features || []).join('|') || '-')
+            + ' hasBrowserTab=' + (typeof sidebar.getTab === 'function' && sidebar.getTab('browser') !== undefined)
+            + ' browserEnabled=' + (typeof sidebar.isTabEnabled === 'function' ? sidebar.isTabEnabled('browser') : '?')
+          try {
+            sidebar.openTab({
+              type: 'browser',
+              url: location.origin + UI_URL + '?view=ai',
+              title: 'Thunderbird AI',
+            })
+            replyTo(event.source, msg.id, { ok: true, result: facts })
+          } catch (error) {
+            replyTo(event.source, msg.id, {
+              ok: false,
+              error: facts + ' / openTab threw: ' + String((error && error.message) || error),
+            })
+          }
           return
         }
 

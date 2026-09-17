@@ -1035,6 +1035,30 @@ function renderPinned (host) {
 
 state.pinned = loadPinned()
 
+// The pin control lives on the toolbar, not inside a folder row: an extra flex
+// child in the row stole width from the ellipsised name and changed the layout of
+// every folder.
+;(function () {
+  var bar = document.querySelector('.bar')
+  if (!bar) return
+  var btn = document.createElement('button')
+  btn.className = 'btn'
+  btn.id = 'btn-pin'
+  btn.textContent = '置顶'
+  btn.title = '把当前文件夹置顶（只加一个副本入口，不移动原文件夹）'
+  btn.onclick = function () {
+    if (!state.folderId) { setError('先选一个文件夹'); return }
+    state.pinned = state.pinned || {}
+    state.pinned[state.folderId] = !state.pinned[state.folderId]
+    savePinned()
+    renderFolders()
+    setNotice(state.pinned[state.folderId] ? '已置顶（顶部多一个副本入口）' : '已取消置顶')
+  }
+  var refresh = document.getElementById('btn-refresh')
+  if (refresh && refresh.parentElement === bar) bar.insertBefore(btn, refresh)
+  else bar.appendChild(btn)
+})()
+
 function renderFolders () {
   var host = $('folders')
   host.innerHTML = ''
@@ -1064,23 +1088,10 @@ function renderFolders () {
       row.style.setProperty('--guide', (10 + (folder.depth - 1) * 16 + 7) + 'px')
     }
     row.title = folder.path || folder.name
-    // Pin toggle. margin-left:auto in CSS parks it at the right edge even though
-    // the row's other children are appended after this point.
-    var pin = document.createElement('span')
-    var isPinned = !!(state.pinned && state.pinned[folder.id])
-    pin.className = 'pin' + (isPinned ? ' on' : '')
-    pin.textContent = isPinned ? '★' : '☆'
-    pin.title = isPinned ? '取消置顶' : '置顶到顶部（只加一个副本入口）'
-    pin.onclick = (function (id) {
-      return function (event) {
-        event.stopPropagation()
-        state.pinned = state.pinned || {}
-        state.pinned[id] = !state.pinned[id]
-        savePinned()
-        renderFolders()
-      }
-    })(folder.id)
-    row.appendChild(pin)
+    // Pinning is done from the toolbar, NOT with a control inside the row: an
+    // extra flex child stole width from the ellipsised name and changed how every
+    // folder row laid out.
+    row.classList.toggle('pinned', !!(state.pinned && state.pinned[folder.id]))
     var caret = document.createElement('span')
     if (folder.hasChildren) {
       caret.className = 'folder-caret'
@@ -2019,16 +2030,17 @@ function sendMail () {
   sendButton.textContent = '发送中…'
   var identity = $('c-from') && $('c-from').value ? $('c-from').value : ''
   var chosenSig = activeSigOption()
-  var sigHtml = chosenSig && chosenSig.html ? String(chosenSig.text || '') : ''
+  var isHtmlSig = !!(chosenSig && (chosenSig.html || /<[a-z][\s\S]*?>/i.test(String(chosenSig.text || ''))))
+  var sigHtml = isHtmlSig ? String(chosenSig.text || '') : ''
+  // The signature is no longer inside the textarea (it is previewed beside it),
+  // so everything in the body is the user's own text.
   var typed = String($('c-body').value || '')
-  var inserted = String(state.composeSig || '')
-  if (inserted) typed = typed.split(inserted).join('')
   var params = {
     to: to,
     cc: $('c-cc').value.trim(),
     subject: $('c-subject').value,
-    body: sigHtml ? (plainToHtml(typed) + sigHtml) : withSignature($('c-body').value, signatureForCompose()),
-    isPlainText: !sigHtml,
+    body: plainToHtml(typed) + sigHtml,
+    isPlainText: false,
   }
   // Send as the account whose signature is in the body, not as whatever
   // Thunderbird happens to consider default.
@@ -3770,9 +3782,42 @@ function renderSigbar () {
   }
 }
 
-function applySelectedSignature () {
+// The composer is a textarea, so HTML cannot be SHOWN inside it — but it can be
+// shown beside it, and that is what makes the signature match what actually goes
+// out. The body therefore never holds the signature: it is appended as HTML at
+// send time, in its original form.
+function sigPreviewEl () {
+  var el = document.getElementById('sig-preview')
+  if (el) return el
+  el = document.createElement('div')
+  el.id = 'sig-preview'
+  el.style.cssText = 'border:1px solid var(--tb-glass-line);border-radius:12px;padding:10px 12px;'
+    + 'max-height:220px;overflow:auto;background:color-mix(in srgb, var(--tb-bg) 70%, transparent)'
   var body = $('c-body')
-  body.value = withSignature(body.value, signatureForCompose())
+  if (body && body.parentElement) body.parentElement.insertBefore(el, body.nextSibling)
+  return el
+}
+
+function applySelectedSignature () {
+  var option = activeSigOption()
+  var host = sigPreviewEl()
+  host.innerHTML = ''
+  var head = document.createElement('div')
+  head.className = 'meta'
+  head.textContent = option
+    ? '签名预览 · ' + (option.name || '签名')
+    : '没有可用签名（点「新建」加一个）'
+  host.appendChild(head)
+  if (!option) return
+  var rendered = document.createElement('div')
+  rendered.style.cssText = 'margin-top:6px;font-size:12.5px;line-height:1.7'
+  if (option.html || /<[a-z][\s\S]*?>/i.test(String(option.text || ''))) {
+    rendered.innerHTML = sanitize(String(option.text || ''))
+  } else {
+    rendered.style.whiteSpace = 'pre-wrap'
+    rendered.textContent = String(option.text || '')
+  }
+  host.appendChild(rendered)
 }
 
 // The composer is opened from several places, so wrap it once instead of editing
