@@ -1690,6 +1690,103 @@ var AI_TITLES = {
   reply: 'AI 回复草稿', draft: 'AI 代写', ask: 'AI 提问', classify: 'AI 分类',
 }
 
+// Once a thread is bound to a session, its AI runs THERE rather than through the
+// host's one-shot completion: the turn becomes part of the DSH conversation, so
+// it can be continued in DSH and it can use the agent's own tools (including the
+// thunderbird_* mail tools) instead of being limited to the text we hand over.
+var SESSION_AI = {
+  summarize: function (p) {
+    return '总结这封邮件：先给一句话结论，再列最多 5 条要点，最后列出需要我处理的事和截止时间（没有就写“无”）。\n\n' + p.text
+  },
+  translate: function (p) {
+    return '把这封邮件翻译成' + (p.targetLang || '中文') + '，保留语气、称呼、分段和署名，只输出译文。\n\n' + p.text
+  },
+  rewrite: function (p) {
+    return '按这个要求改写这封邮件' + (p.instruction ? '：' + p.instruction : '：更专业、简洁、礼貌') + '。只输出改写后的正文。\n\n' + p.text
+  },
+  reply: function (p) {
+    return '基于这封邮件起草一封回复' + (p.instruction ? '，要求：' + p.instruction : '') + '。先给一行“主题：…”，空一行后是正文（含称呼与署名占位）。\n\n主题：' + (p.subject || '') + '\n发件人：' + (p.from || '') + '\n\n--- 原邮件 ---\n' + p.text
+  },
+  draft: function (p) {
+    return '帮我写一封邮件。要求：' + (p.instruction || '（未填，按背景自行判断）') + (p.text ? '\n\n背景资料：\n' + p.text : '') + '\n\n先给一行“主题：…”，空一行后是正文。'
+  },
+  classify: function (p) {
+    return '判断这封邮件的分类并给出建议动作。分类从「账单/发票、客户询价、物流、内部通知、营销推广、其他」里选。用一句话说分类，再一行说建议动作，最后一行说理由。\n\n' + p.text
+  },
+  ask: function (p) {
+    return (p.text ? '参考资料（邮件内容）：\n' + p.text + '\n\n' : '') + '问题：' + (p.instruction || '这封邮件讲了什么？')
+  },
+}
+
+// Poll the session log until the turn produced an assistant message the panel has
+// not shown yet, so the answer appears where the one-shot answer used to.
+function waitForSessionAnswer (record, afterSeq, timeoutMs) {
+  var chat = chatOf(record.key)
+  var deadline = Date.now() + (timeoutMs || 180000)
+  return new Promise(function (resolve) {
+    var tick = function () {
+      if (chat.timer) { clearInterval(chat.timer); chat.timer = null }
+      loadTranscript(record).then(function () {
+        var latest = null
+        for (var i = chat.messages.length - 1; i >= 0; i--) {
+          if (chat.messages[i].role === 'assistant' && chat.messages[i].seq > afterSeq) { latest = chat.messages[i]; break }
+        }
+        if (latest && !chat.running) { resolve(latest.text); return }
+        if (Date.now() > deadline) { resolve(''); return }
+        setTimeout(tick, 2000)
+      })
+    }
+    tick()
+  })
+}
+
+function runAiInSession (action, payload, record) {
+  var chat = chatOf(record.key)
+  var afterSeq = 0
+  for (var i = chat.messages.length - 1; i >= 0; i--) {
+    if (chat.messages[i].role === 'assistant') { afterSeq = chat.messages[i].seq; break }
+  }
+  var build = SESSION_AI[action]
+  if (!build) { setError('这个动作还没有会话版本：' + action); return }
+
+  state.ai.open = true
+  state.ai.busy = true
+  state.ai.error = ''
+  state.ai.text = ''
+  state.ai.model = 'DSH 会话 · ' + record.subject
+  state.ai.action = action
+  state.ai.ask = null
+  state.ai.title = (AI_TITLES[action] || 'AI') + ' · 会话'
+  state.ai.startedAt = Date.now()
+  if (state.ai.ticker) clearInterval(state.ai.ticker)
+  state.ai.ticker = setInterval(function () {
+    if (!state.ai.busy) { clearInterval(state.ai.ticker); state.ai.ticker = null; return }
+    renderAi()
+  }, 1000)
+  renderAi()
+
+  dshCall('session/prompt', { sessionId: record.sessionId, text: build(payload), mode: 'queue' }, 90000)
+    .then(function () { return waitForSessionAnswer(record, afterSeq, 240000) })
+    .then(function (text) {
+      state.ai.busy = false
+      if (state.ai.ticker) { clearInterval(state.ai.ticker); state.ai.ticker = null }
+      if (text) {
+        state.ai.text = text
+        recordAiInSession(action, text, 'session', payload.instruction || '')
+      } else {
+        state.ai.error = '会话还在跑，点「打开会话」看进展'
+      }
+      // A session turn may add tool calls, so the transcript is worth refreshing.
+      return loadTranscript(record).then(function () { renderAi(); if (!$('sessions').hidden) renderSessions() })
+    })
+    .catch(function (error) {
+      state.ai.busy = false
+      if (state.ai.ticker) { clearInterval(state.ai.ticker); state.ai.ticker = null }
+      state.ai.error = String((error && error.message) || error)
+      renderAi()
+    })
+}
+
 function runAi (action, opts) {
   var options = opts || {}
   var text = options.text !== undefined ? options.text : bodyTextForAi()
@@ -1722,6 +1819,15 @@ function runAi (action, opts) {
     from: options.from !== undefined ? options.from : (state.current ? state.current.author : ''),
     maxTokens: options.maxTokens || (action === 'draft' ? 4000 : 3000),
   }
+
+  // Bound thread: this action belongs to its DSH session, not to a one-shot call.
+  var boundThread = currentThread()
+  var boundSession = boundThread ? sessionFor(boundThread.folderId, boundThread.subject) : null
+  if (boundSession && boundSession.sessionId && SESSION_AI[action]) {
+    runAiInSession(action, payload, boundSession)
+    return
+  }
+
   fetch('/api/thunderbird/ai', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
