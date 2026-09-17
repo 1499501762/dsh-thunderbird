@@ -522,6 +522,15 @@ window.__ModuleLoader__.load({
       }
       var sessionId = await uiWorkspace.connectWorkspace(workspaceId)
       if (!sessionId) throw new Error('DSH 未返回 sessionId')
+      // The session is born from the directory, so its title is the directory name
+      // — slug plus hash, which is not what the user calls this thread. Rename it
+      // to the subject. The binding key is the hash and is unaffected either way.
+      if (msg.title) {
+        try {
+          var session = mailSession(ctx, sessionId)
+          if (typeof session.rename === 'function') await session.rename(String(msg.title))
+        } catch (error) { /* the workspace title is already right; this is cosmetic */ }
+      }
       return { workspaceId: workspaceId, sessionId: String(sessionId) }
     }
 
