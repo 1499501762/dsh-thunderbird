@@ -881,6 +881,7 @@
         <option value="日本語">译为 日本語</option>
       </select>
       <button class="btn" id="ai-copy">复制</button>
+      <button class="btn" id="ai-replace" hidden>替换选中</button>
       <button class="btn" id="ai-reply">填入回复</button>
       <button class="btn" id="ai-new">填入新邮件</button>
       <button class="btn" id="ai-close">关闭</button>
@@ -1051,7 +1052,7 @@ var state = {
   checked: [],
   invertMailImages: true,
   sessions: { list: [], byKey: {}, root: '', error: '', dir: '' },
-  ai: { open: false, busy: false, text: '', error: '', model: '', title: '', ask: null },
+  ai: { open: false, busy: false, text: '', error: '', model: '', title: '', ask: null, editorRange: null, hasRange: false },
 }
 
 var $ = function (id) { return document.getElementById(id) }
@@ -2398,6 +2399,9 @@ function renderAi () {
   $('ai-title').textContent = state.ai.title || 'AI'
   $('ai-model').textContent = state.ai.model || ''
   $('ai-lang').hidden = state.ai.action !== 'translate'
+  // Only offered once an AI action was started FROM a composer selection: there
+  // is a specific range to put the answer back into, or there is nothing.
+  $('ai-replace').hidden = AI_VIEW ? !state.ai.hasRange : (!state.ai.editorRange || !state.ai.text)
   $('ai-askrow').hidden = !state.ai.ask
   if (state.ai.ask) $('ai-question').placeholder = state.ai.ask.placeholder
   var body = $('ai-body')
@@ -2530,6 +2534,10 @@ function runAiInSession (action, payload, record) {
 
 function runAi (action, opts) {
   var options = opts || {}
+  // The remembered composer range comes in with the launch that owns it and is
+  // cleared by every launch that does not. A plain AI button therefore cannot
+  // inherit the previous rewrite's selection.
+  state.ai.editorRange = options.range || null
   var text = options.text !== undefined ? options.text : bodyTextForAi()
   if (action !== 'draft' && !String(text || '').trim()) {
     setError('没有可用内容：这封邮件正文为空，可先用「在 Thunderbird 中打开」查看')
@@ -2596,14 +2604,24 @@ function runAi (action, opts) {
   })
 }
 
-function openAsk (action, contextText, placeholder, title) {
+function openAsk (action, contextText, placeholder, title, range) {
+  // Same rule as runAi: a launch without a range invalidates the last one.
+  state.ai.editorRange = null
   state.ai.open = true
   state.ai.busy = false
   state.ai.error = ''
   state.ai.text = ''
   state.ai.model = ''
   state.ai.title = title || 'AI 提问'
-  state.ai.ask = { action: action, context: contextText, placeholder: placeholder || '输入你的问题…' }
+  // The range belongs to THIS ask. Carrying it on the ask rather than in a
+  // separate slot is what stops a stale selection being applied to a later,
+  // unrelated answer — and it is how the range survives until 提问 is pressed.
+  state.ai.ask = {
+    action: action,
+    context: contextText,
+    placeholder: placeholder || '输入你的问题…',
+    range: range || null,
+  }
   renderAi()
   setTimeout(function () { var el = $('ai-question'); if (el) el.focus() }, 30)
 }
@@ -2613,9 +2631,20 @@ function aiSendQuestion () {
   var ask = state.ai.ask
   var question = $('ai-question').value.trim()
   if (ask.action === 'ask' && !question) { setError('请输入问题'); return }
+  // In the sidebar tab the ask came over the channel, so it has no range of its
+  // own — and the composer it belongs to lives in the panel. Relay the question
+  // instead of running a second, disconnected completion here.
+  if (AI_VIEW) {
+    if (!aiBus) { setError('面板没有开着，无法继续这个提问'); return }
+    try { aiBus.postMessage({ type: 'ai/ask-send', question: question }) } catch (error) { setError('无法通知面板') }
+    state.ai.ask = null
+    $('ai-question').value = ''
+    renderAi()
+    return
+  }
   state.ai.ask = null
   $('ai-question').value = ''
-  runAi(ask.action, { text: ask.context, instruction: question, title: state.ai.title })
+  runAi(ask.action, { text: ask.context, instruction: question, title: state.ai.title, range: ask.range })
 }
 
 function aiCopy () {
@@ -2789,12 +2818,428 @@ function onSelMenuClick (event) {
   else if (act === 'rewrite') openAsk('rewrite', text, '改写要求（如：更简洁、更正式）', 'AI 改写 · 选段')
 }
 
+// ------------------------------------------------------------------ Markdown
+// A small serialiser rather than a CommonMark library: it has to handle the
+// shapes mail actually arrives in (paragraphs, bold, links, lists, a quote, a
+// table, an image) and to be predictable about everything else. Anything it does
+// not know about keeps its text and loses its decoration, which is the right way
+// round — dropping content would be worse than dropping a colour.
+var MD_BLOCK = {
+  P: 1, DIV: 1, SECTION: 1, ARTICLE: 1, HEADER: 1, FOOTER: 1, MAIN: 1, ASIDE: 1,
+  NAV: 1, UL: 1, OL: 1, LI: 1, DL: 1, DT: 1, DD: 1, BLOCKQUOTE: 1, PRE: 1,
+  TABLE: 1, THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, TD: 1, TH: 1, HR: 1,
+  H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, ADDRESS: 1, FIGURE: 1,
+  FIGCAPTION: 1, CENTER: 1, FORM: 1, FIELDSET: 1,
+}
+
+// Only the characters that would otherwise change how the text is READ. Escaping
+// brackets and hashes as well turns ordinary prose into noise.
+function mdEscape (text) {
+  return String(text == null ? '' : text).replace(/([\\`*_])/g, '\\$1')
+}
+
+function mdUrl (href) {
+  var url = String(href || '').trim()
+  if (!url) return ''
+  return /[)\s]/.test(url) ? '<' + url + '>' : url
+}
+
+// An inline image travels as its ADDRESS, never as its bytes: a cid part is shown
+// here as a data: URL, and pasting a megabyte of base64 into someone's notes is
+// not what "copy as Markdown" means.
+function mdImageSrc (src) {
+  var value = String(src || '')
+  // data: is the resolved form of a cid part, and cid: is the unresolved one —
+  // neither is an address anything else can open. Emitting `![](cid:…)` was just
+  // broken Markdown in the middle of an otherwise clean paste.
+  if (!value || value.indexOf('data:') === 0 || /^cid:/i.test(value)) return ''
+  var proxy = value.indexOf('/api/thunderbird/image?url=')
+  if (proxy >= 0) {
+    try { return decodeURIComponent(value.slice(proxy + 27)) } catch (error) { return '' }
+  }
+  var local = value.indexOf('/api/thunderbird/local-image?path=')
+  if (local >= 0) {
+    try { return decodeURIComponent(value.slice(local + 33)) } catch (error) { return '' }
+  }
+  if (value.charAt(0) === '/') return ''
+  return value
+}
+
+// Foxmail writes the content-id straight into the alt text ("说明: cid:…"). That
+// is machine noise, and it was ending up inside people's notes — and inside the
+// suggested filename when a picture was saved.
+function cleanImageAlt (alt) {
+  var text = String(alt == null ? '' : alt)
+  if (/cid:/i.test(text)) {
+    text = text.replace(/^\s*说明\s*[:：]\s*/i, '').replace(/cid:\S*/gi, '').trim()
+    // "说明:" plus a lone cid is not a name, it is the absence of one.
+    if (!text || /^说明\s*[:：]?$/.test(text)) text = ''
+  }
+  return text
+}
+
+function mdImageAlt (alt) {
+  return mdEscape(cleanImageAlt(alt)).trim()
+}
+
+function mdInline (node) {
+  if (node.nodeType === 3) return mdEscape(node.nodeValue)
+  if (node.nodeType !== 1) return ''
+  var tag = node.tagName
+  if (tag === 'BR') return '  \n'
+  if (tag === 'IMG') {
+    var url = mdImageSrc(node.currentSrc || node.getAttribute('src'))
+    var alt = mdImageAlt(node.getAttribute('alt'))
+    // No address and no usable name means nothing to carry over; a bare `![]()`
+    // is worse than silence.
+    if (!url) return alt ? '![' + alt + '](内联图片)' : ''
+    return '![' + alt + '](' + mdUrl(url) + ')'
+  }
+  if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'IFRAME' || tag === 'OBJECT' || tag === 'HEAD') return ''
+  var inner = ''
+  for (var i = 0; i < node.childNodes.length; i++) inner += mdInline(node.childNodes[i])
+  if ((tag === 'STRONG' || tag === 'B') && inner.trim()) return '**' + inner + '**'
+  if ((tag === 'EM' || tag === 'I') && inner.trim()) return '*' + inner + '*'
+  if ((tag === 'DEL' || tag === 'S' || tag === 'STRIKE') && inner.trim()) return '~~' + inner + '~~'
+  if (tag === 'CODE' && inner.trim()) return '`' + inner + '`'
+  if (tag === 'A') {
+    var href = node.getAttribute('href') || ''
+    if (!href || href.charAt(0) === '#' || /^javascript:/i.test(href)) return inner
+    return '[' + (inner.trim() || href) + '](' + mdUrl(href) + ')'
+  }
+  return inner
+}
+
+// Trim the blank lines a block wrapper leaves at both ends, and collapse runs of
+// them: '- two' followed by a blank line and a nested '- nested' is a LOOSE list
+// in Markdown, which renders with extra spacing the mail did not have.
+function mdTighten (lines) {
+  var out = []
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i]
+    if (!line && out.length && !out[out.length - 1]) continue
+    out.push(line)
+  }
+  while (out.length && !out[0]) out.shift()
+  while (out.length && !out[out.length - 1]) out.pop()
+  return out
+}
+
+function mdList (listEl, ordered) {
+  var out = []
+  var index = 0
+  for (var i = 0; i < listEl.children.length; i++) {
+    var li = listEl.children[i]
+    if (li.tagName !== 'LI') continue
+    index += 1
+    var marker = ordered ? index + '. ' : '- '
+    var pad = new Array(marker.length + 1).join(' ')
+    var body = mdTighten(mdBlocks(li))
+    if (!body.length) { out.push(marker.replace(/\s+$/, '')); continue }
+    for (var b = 0; b < body.length; b++) {
+      // A blank line right before a NESTED marker is what makes a list loose;
+      // the indentation already carries the structure. A blank before ordinary
+      // text is a real second paragraph and stays.
+      if (!body[b] && b + 1 < body.length && /^\s*([-*+]|\d+\.)\s/.test(body[b + 1])) continue
+      out.push(b === 0 ? marker + body[b] : (body[b] ? pad + body[b] : ''))
+    }
+  }
+  return out
+}
+
+function mdTable (table) {
+  var rows = []
+  var trs = table.querySelectorAll('tr')
+  for (var i = 0; i < trs.length; i++) {
+    var cells = []
+    var tds = trs[i].children
+    for (var c = 0; c < tds.length; c++) {
+      if (tds[c].tagName !== 'TD' && tds[c].tagName !== 'TH') continue
+      cells.push(mdInline(tds[c]).replace(/\s*\n\s*/g, ' ').replace(/\|/g, '\\|').trim())
+    }
+    if (cells.length) rows.push(cells)
+  }
+  if (!rows.length) return []
+  var width = 0
+  for (var r = 0; r < rows.length; r++) width = Math.max(width, rows[r].length)
+  for (var r2 = 0; r2 < rows.length; r2++) { while (rows[r2].length < width) rows[r2].push('') }
+  var lines = ['| ' + rows[0].join(' | ') + ' |']
+  var rule = []
+  for (var k = 0; k < width; k++) rule.push('---')
+  lines.push('| ' + rule.join(' | ') + ' |')
+  for (var r3 = 1; r3 < rows.length; r3++) lines.push('| ' + rows[r3].join(' | ') + ' |')
+  return lines
+}
+
+function mdBlockEl (el) {
+  var tag = el.tagName
+  if (tag === 'HR') return ['', '---', '']
+  if (/^H[1-6]$/.test(tag)) {
+    return ['', new Array(Number(tag.charAt(1)) + 1).join('#') + ' ' + mdInline(el).trim(), '']
+  }
+  if (tag === 'PRE') return ['', '```', el.textContent.replace(/\n+$/, ''), '```', '']
+  if (tag === 'BLOCKQUOTE') {
+    var quoted = mdTighten(mdBlocks(el))
+    var out = []
+    for (var i = 0; i < quoted.length; i++) out.push(quoted[i] ? '> ' + quoted[i] : '>')
+    return [''].concat(out, [''])
+  }
+  if (tag === 'UL' || tag === 'OL') return [''].concat(mdList(el, tag === 'OL'), [''])
+  if (tag === 'TABLE') return [''].concat(mdTable(el), [''])
+  return [''].concat(mdBlocks(el), [''])
+}
+
+function mdBlocks (root) {
+  var out = []
+  var buf = ''
+  function flush () {
+    var text = buf.replace(/[ \t]+/g, ' ').trim()
+    if (text) { out.push(text); out.push('') }
+    buf = ''
+  }
+  var kids = root.childNodes
+  for (var i = 0; i < kids.length; i++) {
+    var node = kids[i]
+    if (node.nodeType === 1 && MD_BLOCK[node.tagName]) {
+      flush()
+      var lines = mdBlockEl(node)
+      for (var j = 0; j < lines.length; j++) out.push(lines[j])
+    } else {
+      buf += mdInline(node)
+    }
+  }
+  flush()
+  return out
+}
+
+function htmlToMarkdown (root) {
+  if (!root) return ''
+  return mdBlocks(root).join('\n')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function htmlStringToMarkdown (html) {
+  var box = document.createElement('div')
+  box.innerHTML = sanitize(html)
+  return htmlToMarkdown(box)
+}
+
+// --- 复制为 Markdown
+function ctxSelectionMarkdown () {
+  var sel = window.getSelection ? window.getSelection() : null
+  if (!sel || sel.rangeCount === 0) return ''
+  var plain = String(sel)
+  if (!plain.trim()) return ''
+  var fragment = null
+  try { fragment = sel.getRangeAt(0).cloneContents() } catch (error) { fragment = null }
+  var markdown = htmlToMarkdown(fragment)
+  return markdown || plain.trim()
+}
+
+function ctxCopySelectionMarkdown () {
+  var markdown = ctxSelectionMarkdown()
+  if (!markdown) { setError('先选中一段内容'); return }
+  ctxWriteClipboard(markdown, 'Markdown')
+}
+
+function ctxMailMarkdown (message) {
+  var lines = ['# ' + String(message.subject || '(无主题)'), '']
+  lines.push('- 发件人：' + String(message.author || ''))
+  if (message.recipients && message.recipients.length) lines.push('- 收件人：' + message.recipients.join(', '))
+  if (message.ccList && message.ccList.length) lines.push('- 抄送：' + message.ccList.join(', '))
+  lines.push('- 时间：' + fmtFull(message.date))
+  lines.push('')
+  var body = ctxMailHtml(message)
+  var converted = body ? htmlStringToMarkdown(body) : ''
+  if (!converted && state.body && state.body.text) converted = String(state.body.text).trim()
+  return lines.join('\n') + converted
+}
+
+function ctxCopyMailMarkdown () {
+  var message = ctxMessage()
+  if (!message) { setError('先选中一封邮件'); return }
+  var body = ctxMailHtml(message)
+  if (!body && !(state.body && state.body.text)) {
+    // A body that was never fetched would otherwise export as a header and
+    // nothing else, which reads as "the mail was empty" rather than "not loaded".
+    loadBody(message.id)
+    setError('正文还没载入，请等它加载完再复制')
+    return
+  }
+  ctxWriteClipboard(ctxMailMarkdown(message), '整封邮件（Markdown）')
+}
+
+function ctxWriteClipboard (text, what) {
+  var value = String(text || '')
+  if (!value) { setError('没有可复制的内容'); return }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(value).then(function () {
+      setNotice('已复制' + (what ? '（' + what + '）' : ''))
+    }).catch(function () {
+      setError('写剪贴板被拒绝，请改用编辑器里选中后 Ctrl+C')
+    })
+    return
+  }
+  setError('这个浏览器不支持写剪贴板')
+}
+
+// --- 图片另存为
+// The bytes come from wherever the reader got them: a data: URL for a cid part,
+// otherwise the host's proxy. A cross-origin address the proxy already gave up on
+// is re-fetched THROUGH the proxy rather than fetched directly, because a direct
+// fetch would be a CORS failure and the user would just see "保存失败".
+function ctxImageSource (img) {
+  var src = String(img.currentSrc || img.getAttribute('src') || '')
+  if (!src) return ''
+  if (src.indexOf('data:') === 0) return src
+  if (src.charAt(0) === '/') return src
+  return '/api/thunderbird/image?url=' + encodeURIComponent(src)
+}
+
+function ctxImageName (img, mime) {
+  var url = mdImageSrc(img.currentSrc || img.getAttribute('src'))
+  var base = ''
+  if (url) {
+    base = url.split('?')[0].split('#')[0].split('/').pop() || ''
+    try { base = decodeURIComponent(base) } catch (error) { /* keep */ }
+  }
+  // An inline part has no address at all, so the only name it has is its alt —
+  // and after cleaning that may be nothing. A timestamp beats "说明_ cid__Foxmail…".
+  if (!base) base = cleanImageAlt(img.getAttribute('alt'))
+  if (!base) {
+    var now = new Date()
+    var pad = function (n) { return (n < 10 ? '0' : '') + n }
+    base = 'mail-image-' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate())
+      + '-' + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds())
+  }
+  base = base.replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, ' ').trim().slice(0, 60)
+  var m = /\.([a-z0-9]{2,5})$/i.exec(base)
+  var ext = m ? m[1].toLowerCase() : ''
+  if (!ext) {
+    if (mime === 'image/png') ext = 'png'
+    else if (mime === 'image/jpeg') ext = 'jpg'
+    else if (mime === 'image/gif') ext = 'gif'
+    else if (mime === 'image/webp') ext = 'webp'
+    else if (mime === 'image/svg+xml') ext = 'svg'
+    else if (mime === 'image/bmp') ext = 'bmp'
+  }
+  if (ext && new RegExp('\\.' + ext + '$', 'i').test(base)) return base
+  return base + (ext ? '.' + ext : '.png')
+}
+
+var IMAGE_MIME_EXT = {
+  'image/png': ['.png'], 'image/jpeg': ['.jpg', '.jpeg'], 'image/gif': ['.gif'],
+  'image/webp': ['.webp'], 'image/svg+xml': ['.svg'], 'image/bmp': ['.bmp'],
+}
+
+function ctxSaveImage (img) {
+  var src = ctxImageSource(img)
+  if (!src) { setError('这张图没有可保存的地址'); return }
+  setNotice('正在取图片…')
+  fetch(src, { cache: 'no-store' }).then(function (res) {
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    return res.blob()
+  }).then(function (blob) {
+    if (!blob || !blob.size) throw new Error('图片是空的')
+    var name = ctxImageName(img, blob.type)
+    // The user asked for a directory picker every time, so the picker is the
+    // primary path and the plain download is only the fallback for a browser that
+    // has no File System Access API (or a context that refuses it).
+    if (typeof window.showSaveFilePicker === 'function') {
+      var types = []
+      var exts = IMAGE_MIME_EXT[blob.type]
+      if (exts) {
+        var accept = {}
+        accept[blob.type] = exts
+        types.push({ description: blob.type, accept: accept })
+      }
+      return window.showSaveFilePicker({
+        suggestedName: name,
+        types: types,
+        excludeAcceptAllOption: false,
+      }).then(function (handle) {
+        return handle.createWritable().then(function (writable) {
+          return writable.write(blob).then(function () { return writable.close() })
+        }).then(function () { return { saved: true, name: handle.name } })
+      }).catch(function (error) {
+        // Cancelling the picker is a decision, not a failure.
+        if (error && (error.name === 'AbortError' || error.name === 'NotAllowedError')) return { cancelled: true }
+        throw error
+      })
+    }
+    var url = URL.createObjectURL(blob)
+    var link = document.createElement('a')
+    link.href = url
+    link.download = name
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.setTimeout(function () { URL.revokeObjectURL(url) }, 20000)
+    return { saved: true, name: name, downloaded: true }
+  }).then(function (result) {
+    if (!result) return
+    if (result.cancelled) { setNotice('已取消'); return }
+    setNotice((result.downloaded ? '已下载 ' : '已保存 ') + result.name)
+  }).catch(function (error) {
+    setError('保存图片失败：' + String((error && error.message) || error))
+  })
+}
+
+// --- 在撰写区对选中文字用 AI
+// The result goes to the same place every other AI result goes — the right
+// sidebar tab — and this only records WHICH range it came from, so 「替换选中」
+// can put it back once the user has read it.
+function ctxEditorHtml () {
+  var node = ctxEditable()
+  if (!node || node.id !== 'c-body') return null
+  return node
+}
+
+function ctxAiOnSelection (action, title, placeholder) {
+  var editor = ctxEditorHtml()
+  var sel = window.getSelection ? window.getSelection() : null
+  if (!editor || !sel || sel.rangeCount === 0) { setError('先在正文里选中一段文字'); return }
+  var range = sel.getRangeAt(0)
+  if (!editor.contains(range.commonAncestorContainer)) { setError('先在正文里选中一段文字'); return }
+  var text = String(sel).trim()
+  if (!text) { setError('先在正文里选中一段文字'); return }
+  // Passed IN, not stashed afterwards: runAi is the only place that sets the
+  // remembered range, so there is one rule instead of two that can disagree.
+  if (action === 'rewrite' || action === 'ask') openAsk(action, text, placeholder, title, range.cloneRange())
+  else runAi(action, { text: text, title: title, range: range.cloneRange() })
+  renderAi()
+}
+
+function ctxReplaceSelection () {
+  var range = state.ai.editorRange
+  var editor = $('c-body')
+  var text = String(state.ai.text || '').trim()
+  if (!range || !editor) { setError('没有可替换的选区'); return }
+  if (!text) { setError('AI 还没有输出内容'); return }
+  try {
+    range.deleteContents()
+    range.insertNode(document.createTextNode(text))
+    range.collapse(false)
+    var sel = window.getSelection()
+    sel.removeAllRanges()
+    sel.addRange(range)
+  } catch (error) {
+    setError('替换失败：' + String((error && error.message) || error))
+    return
+  }
+  state.ai.editorRange = null
+  renderAi()
+  setNotice('已用 AI 结果替换选中的文字')
+}
+
 // ------------------------------------------------------------------ 右键菜单
 // One element, three item sets. The editor gives text commands, a mail gives mail
 // commands, and the reader body gets both — text first, because that is what the
 // cursor is sitting in. Every item is a plain button, so the whole menu is
 // keyboard-reachable through Tab without a second implementation.
-var ctxState = { target: null, messageId: null, folder: null, kind: '' }
+var ctxState = { target: null, messageId: null, folder: null, kind: '', image: null, x: 0, y: 0 }
 
 function ctxButton (label, hint, run, opts) {
   var options = opts || {}
@@ -3152,21 +3597,54 @@ function ctxPrint () {
 }
 
 // --- menu assembly
-var CTX_TEXT_ITEMS = [
-  ['剪切', 'Ctrl+X', function () { ctxCut() }],
-  ['复制', 'Ctrl+C', function () { ctxCopy() }],
-  ['粘贴', 'Ctrl+V', function () { ctxPaste(false) }],
-  ['__sep'],
-  ['粘贴为纯文本', 'Ctrl+Shift+V', function () { ctxPaste(true) }],
-  ['全选', 'Ctrl+A', function () { ctxSelectAll() }],
-  ['__sep'],
-  ['撤销', 'Ctrl+Z', function () { ctxExec('undo') }],
-  ['重做', 'Ctrl+Shift+Z', function () { ctxExec('redo') }],
-  ['__sep'],
-  ['清除格式', '', function () { ctxExec('removeFormat') }],
-  ['插入分割线', '', function () { ctxInsertHtml('<hr>') }],
-  ['插入日期时间', '', function () { ctxInsertDateTime() }]
-]
+// Built per open rather than declared once: 「复制为 Markdown」 only exists when
+// there is a selection, and 「图片另存为」 only when the click landed on a
+// picture. An item that is always present but usually refuses is worse than an
+// item that is simply not there.
+function ctxTextItems () {
+  return [
+    ['剪切', 'Ctrl+X', function () { ctxCut() }],
+    ['复制', 'Ctrl+C', function () { ctxCopy() }],
+    ['粘贴', 'Ctrl+V', function () { ctxPaste(false) }],
+    ['__sep'],
+    ['粘贴为纯文本', 'Ctrl+Shift+V', function () { ctxPaste(true) }],
+    ['全选', 'Ctrl+A', function () { ctxSelectAll() }],
+    ['__sep'],
+    ['撤销', 'Ctrl+Z', function () { ctxExec('undo') }],
+    ['重做', 'Ctrl+Shift+Z', function () { ctxExec('redo') }],
+    ['__sep'],
+    ['清除格式', '', function () { ctxExec('removeFormat') }],
+    ['插入分割线', '', function () { ctxInsertHtml('<hr>') }],
+    ['插入日期时间', '', function () { ctxInsertDateTime() }],
+  ]
+}
+
+function ctxSelectionItems () {
+  if (!ctxSelectionMarkdown()) return []
+  return [['__sep'], ['复制为 Markdown', '', function () { ctxCopySelectionMarkdown() }]]
+}
+
+// The AI items only exist in the composer body: the reader has its own selection
+// menu, and the signature editor has no mail to ask about.
+function ctxEditorAiItems () {
+  var editor = ctxEditorHtml()
+  if (!editor) return []
+  var sel = window.getSelection ? window.getSelection() : null
+  if (!sel || sel.rangeCount === 0 || !String(sel).trim()) return []
+  return [
+    ['__sep'],
+    ['__head', '对选中的文字'],
+    ['AI 改写这段', '', function () { ctxAiOnSelection('rewrite', 'AI 改写 · 撰写区选段', '改写要求（如：更简洁、更正式、语气更硬）') }],
+    ['AI 翻译这段', '', function () { ctxAiOnSelection('translate', 'AI 翻译 · 撰写区选段') }],
+    ['AI 提问这段', '', function () { ctxAiOnSelection('ask', 'AI 提问 · 撰写区选段', '针对这段文字提问…') }],
+  ]
+}
+
+function ctxImageItems () {
+  var img = ctxState.image
+  if (!img) return []
+  return [['__sep'], ['图片另存为…', '', function () { ctxSaveImage(img) }]]
+}
 
 function ctxMailItems () {
   var message = ctxMessage()
@@ -3181,6 +3659,7 @@ function ctxMailItems () {
     ['__sep'],
     ['复制主题', '', function () { ctxCopyText(message.subject, '主题') }],
     ['复制发件人地址', '', function () { ctxCopyText(emailOf(message.author), '发件人地址') }],
+    ['整封邮件复制为 Markdown', '', function () { ctxCopyMailMarkdown() }],
     ['导出为 .eml', '', function () { ctxSaveEml() }],
     ['打印', 'Ctrl+P', function () { ctxPrint() }],
     ['__sep'],
@@ -3261,18 +3740,20 @@ function showContextMenu (event, kind, messageId, target) {
   ctxState.kind = kind
   ctxState.messageId = messageId || null
   ctxState.target = target || null
+  ctxState.image = null
   ctxState.x = event.clientX
   ctxState.y = event.clientY
+  if (target && target.closest) ctxState.image = target.closest('img')
   var items = []
   if (kind === 'editor') {
-    items = CTX_TEXT_ITEMS
+    items = ctxTextItems().concat(ctxSelectionItems(), ctxEditorAiItems(), ctxImageItems())
   } else if (kind === 'reader') {
     // The reader is both: text commands act on the selection under the cursor,
     // mail commands on the message the reader is showing. One array entry per
     // item — ['__head', subject] is a pair, not two entries.
     var message = ctxMessage()
     items = [['__head', message ? String(message.subject || '这封邮件') : '这封邮件']]
-      .concat(CTX_TEXT_ITEMS, ['__sep'], ctxMailItems())
+      .concat(ctxTextItems(), ctxSelectionItems(), ctxImageItems(), ['__sep'], ctxMailItems())
   } else {
     items = ctxMailItems()
   }
@@ -4446,10 +4927,18 @@ function aiSnapshot () {
     model: state.ai.model,
     title: state.ai.title,
     action: state.ai.action,
-    ask: state.ai.ask,
+    // A Range is not part of the channel's vocabulary and must not be sent: the
+    // tab only needs to render the ask row, and the panel keeps the range.
+    ask: state.ai.ask
+      ? { action: state.ai.ask.action, context: state.ai.ask.context, placeholder: state.ai.ask.placeholder }
+      : null,
     startedAt: state.ai.startedAt,
     subject: state.current ? state.current.subject : '',
     from: state.current ? state.current.author : '',
+    // The Range itself cannot cross the channel, and must not: only the panel
+    // that owns the composer body can act on it. The tab just learns whether
+    // 「替换选中」 would mean anything.
+    hasRange: state.ai.editorRange !== null && state.ai.editorRange !== undefined && !!state.ai.text,
   }
 }
 
@@ -4469,6 +4958,7 @@ function applyAiSnapshot (snap) {
   state.ai.startedAt = snap.startedAt
   state.ai.subject = snap.subject || ''
   state.ai.from = snap.from || ''
+  state.ai.hasRange = snap.hasRange === true
 }
 
 function postAiState () {
@@ -4513,6 +5003,17 @@ if (aiBus) {
     }
     // A tab that just opened has no state yet: answer with whatever we hold.
     if (msg.type === 'ai/ask' && !AI_VIEW) postAiState()
+    // The tab has no range of its own — only the panel owns the composer — so
+    // the click is relayed here and performed against the real selection.
+    if (msg.type === 'ai/replace' && !AI_VIEW) {
+      ctxReplaceSelection()
+      postAiState()
+    }
+    // Same reason: the 提问 in the tab continues an ask whose range lives here.
+    if (msg.type === 'ai/ask-send' && !AI_VIEW && state.ai.ask) {
+      $('ai-question').value = String(msg.question || '')
+      aiSendQuestion()
+    }
   }
   window.addEventListener('pagehide', function () { try { aiBus.close() } catch (error) { /* ignore */ } })
 }
@@ -5381,6 +5882,17 @@ $('ai-close').onclick = function () {
   renderAi()
 }
 $('ai-copy').onclick = aiCopy
+// 「替换选中」 appears in the sidebar tab, but the range to replace lives in the
+// composer body, which belongs to the panel. The tab asks; the panel acts.
+$('ai-replace').onclick = function () {
+  if (AI_VIEW) {
+    if (!aiBus) { setError('面板没有开着，无法替换'); return }
+    try { aiBus.postMessage({ type: 'ai/replace' }) } catch (error) { setError('无法通知面板') }
+    return
+  }
+  ctxReplaceSelection()
+}
+$('ai-replace').onclick = ctxReplaceSelection
 $('ai-reply').onclick = aiIntoReply
 $('ai-new').onclick = function () {
   var text = state.ai.text
