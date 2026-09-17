@@ -759,6 +759,114 @@ window.__ModuleLoader__.load({
         }
 
 
+        // Send through DSH's OWN composer for that session.
+        //
+        // `conversation.input.for(sessions.scope(id))` is the input machine the
+        // native composer drives, and its actions are setDraft / addAttachments /
+        // submit. Using it means attachments upload, the model and approval
+        // settings apply, and the turn is indistinguishable from one typed by
+        // hand — none of which a plugin can reproduce by calling prompt() itself.
+        //
+        // This handler was once deleted by accident (a line-range edit aimed at the
+        // probe helpers above took it too), and the only symptom was that 发送 did
+        // nothing. `dev/check-panel.mjs` now diffs the panel's dshCall types
+        // against these handlers so that cannot happen quietly again.
+        if (msg.type === 'session/compose') {
+          var conv = serviceOf(ctx, 'conversation')
+          var sess = serviceOf(ctx, 'sessions')
+          if (conv === undefined || sess === undefined) {
+            replyTo(event.source, msg.id, { ok: false, error: 'conversation / sessions 服务不可用' })
+            return
+          }
+          var sid = String(msg.sessionId || '')
+          if (!sid) { replyTo(event.source, msg.id, { ok: false, error: '缺少 sessionId' }); return }
+          var handle = null
+          try { handle = conv.input.for(sess.scope(sid)) } catch (error) { handle = null }
+          if (!handle || !handle.actions || typeof handle.actions.submit !== 'function') {
+            replyTo(event.source, msg.id, { ok: false, error: '拿不到这个会话的输入框' })
+            return
+          }
+          var files = Array.isArray(msg.files) ? msg.files : []
+          var text = String(msg.text || '')
+          // A dry run never submits, so it is also allowed to set an EMPTY draft —
+          // which is how a diagnostic can put the composer back as it found it.
+          if (!text && !files.length && msg.dryRun !== true) {
+            replyTo(event.source, msg.id, { ok: false, error: '没有内容可发送' })
+            return
+          }
+          var report = { steps: [] }
+
+          var send = function () {
+            // setDraft and submit are two writes into the same input machine, and
+            // submit reads the draft it holds. Firing them in the same tick sent an
+            // EMPTY turn — which is exactly what "发送没生效" looked like from the
+            // panel: no error, no message. Let the state settle, then confirm the
+            // draft actually took before submitting.
+            var held = ''
+            try {
+              var snap = handle.state.getSnapshot()
+              held = String((snap && snap.draft) || '')
+            } catch (error) { held = '' }
+            if (text && held.indexOf(text.slice(0, 24)) < 0) {
+              replyTo(event.source, msg.id, { ok: false, error: '草稿没有写进会话输入框，已中止发送（' + report.steps.join(' ') + '）' })
+              return
+            }
+            if (msg.dryRun === true) {
+              replyTo(event.source, msg.id, { ok: true, result: { dryRun: true, held: held.length, steps: report.steps } })
+              return
+            }
+            try {
+              handle.actions.submit()
+              replyTo(event.source, msg.id, { ok: true, result: { steps: report.steps } })
+            } catch (error) {
+              replyTo(event.source, msg.id, { ok: false, error: '提交失败：' + String((error && error.message) || error) })
+            }
+          }
+
+          // An upload is asynchronous: submitting while the queue is still busy
+          // would send the message without its attachments.
+          var waitForQueue = function (left) {
+            var queue = []
+            try {
+              var snap = handle.state.getSnapshot()
+              queue = (snap && snap.queue) || []
+            } catch (error) { queue = [] }
+            if (!queue.length || left <= 0) { report.steps.push('queue=' + (queue.length ? 'timed-out' : 'clear')); send(); return }
+            setTimeout(function () { waitForQueue(left - 1) }, 250)
+          }
+
+          if (files.length) {
+            try {
+              // The sequence the native composer uses, copied from
+              // dsh-client-ui-conversation: createDrafts registers the files and
+              // starts their uploads, then the ids go into the draft.
+              var drafts = conv.createDrafts(sid, files)
+              var ids = (drafts || []).map(function (d) { return d.id })
+              var accepted = handle.actions.addAttachments(ids)
+              report.steps.push('drafts=' + ids.length + ' accepted=' + accepted)
+              if (accepted === false && typeof conv.releaseDraftAttachments === 'function') {
+                conv.releaseDraftAttachments(drafts)
+                replyTo(event.source, msg.id, { ok: false, error: '这个会话不接受这些附件' })
+                return
+              }
+              waitForQueue(80)
+            } catch (error) {
+              replyTo(event.source, msg.id, { ok: false, error: '附件上传失败：' + String((error && error.message) || error) })
+            }
+            return
+          }
+
+          try { handle.actions.setDraft(text) } catch (error) {
+            replyTo(event.source, msg.id, { ok: false, error: '写入草稿失败：' + String((error && error.message) || error) })
+            return
+          }
+          report.steps.push('setDraft=ok')
+          // Two turns of the event loop: enough for the input machine to commit
+          // the draft, and far below anything a person would notice.
+          setTimeout(send, 0)
+          return
+        }
+
         // Show or hide DSH's own right column.
         //
         // `openRightbar` is called automatically when a tab opens, but there was

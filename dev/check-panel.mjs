@@ -34,3 +34,28 @@ try {
   }
   process.exit(1)
 }
+
+// Every message the panel sends must have a handler in the client half.
+//
+// This exists because it did not: a range-based edit meant to delete two debug
+// probes took the `session/compose` handler with it, and the ONLY symptom was
+// that the session composer's 发送 button did nothing — no error anywhere, since
+// a dshCall with no handler simply never gets a reply. A parse check cannot see
+// that, and neither can a reader skimming either file on its own.
+const client = readFileSync(join(here, '..', 'dsh-side', 'panel-client.js'), 'utf8')
+const called = new Set()
+for (const match of code.matchAll(/dshCall\(\s*'([a-zA-Z0-9/_-]+)'/g)) called.add(match[1])
+const answered = new Set()
+for (const match of client.matchAll(/msg\.type === '([a-zA-Z0-9/_-]+)'/g)) answered.add(match[1])
+for (const match of client.matchAll(/msg\.type === '([a-zA-Z0-9/_-]+)'\s*\|\|\s*msg\.type === '([a-zA-Z0-9/_-]+)'/g)) {
+  answered.add(match[1])
+  answered.add(match[2])
+}
+const missing = [...called].filter((type) => !answered.has(type))
+if (missing.length > 0) {
+  console.error('the panel calls message types the client half does not answer:')
+  for (const type of missing) console.error('  ' + type)
+  console.error('a dshCall with no handler never gets a reply — the button just does nothing.')
+  process.exit(1)
+}
+console.log('every panel dshCall type has a client-half handler (' + called.size + ' checked)')

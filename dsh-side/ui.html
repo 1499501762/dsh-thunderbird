@@ -840,11 +840,25 @@
     line-height: 1.6;
     padding: 7px 10px;
     max-height: 160px;
-    overflow: auto;
+    /* hidden, not auto: the box grows to its content (see autoGrow), so a
+       scrollbar here means the height was computed 2px short of the border — and
+       it showed up as a stray bar between the text and the send button. */
+    overflow-y: hidden;
+    overflow-x: hidden;
     outline: none;
   }
   .cm-text:focus { border-color: var(--tb-border-strong); }
-  .cm-send { flex: none; height: 30px; }
+  .cm-text.at-max { overflow-y: auto; }
+  .cm-send {
+    flex: none;
+    height: 30px;
+    /* A bare .btn is display:block in this sheet (the inline-flex centring is
+       scoped to .actions), so the label sat high in a 30px box. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 14px;
+  }
 
   /* When the block really did move to the right sidebar, what is left behind in
      the panel must stop being a floating window. It used to keep its fixed
@@ -5402,8 +5416,15 @@ function composerEl (record) {
   input.placeholder = '就这条邮件线问一句…（回车发送，Shift+回车换行）'
   input.value = chat.draft || ''
   function autoGrow () {
+    input.classList.remove('at-max')
     input.style.height = 'auto'
-    input.style.height = Math.min(160, input.scrollHeight) + 'px'
+    // scrollHeight includes padding but NOT the border, and box-sizing is
+    // border-box — so setting height = scrollHeight left the box 2px short of its
+    // own content and every line produced a scrollbar.
+    var borders = input.offsetHeight - input.clientHeight
+    var wanted = input.scrollHeight + (borders > 0 ? borders : 0)
+    input.style.height = Math.min(160, wanted) + 'px'
+    if (wanted > 160) input.classList.add('at-max')
   }
   input.oninput = function () { chat.draft = input.value; autoGrow() }
   input.onkeydown = function (event) {
