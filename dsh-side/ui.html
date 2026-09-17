@@ -2349,6 +2349,17 @@ function renderAi () {
     body.innerHTML = '<span class="ai-typing"><i></i><i></i><i></i></span> 思考中… ' + secs + ' 秒'
     return
   }
+  // An empty AI block is only meaningful in the side panel, where it is a
+  // dismissable overlay. As a right-sidebar TAB it is the whole page, and a page
+  // that paints nothing at all reads as broken.
+  if (!state.ai.text) {
+    body.innerHTML = AI_VIEW
+      ? '<div class="hint"><h3>还没有 AI 结果</h3>'
+        + '<p>这个标签会显示在面板里触发的 AI 动作：总结、翻译、改写、回复草稿、代写、提问、分类建议。</p>'
+        + '<p>在邮件列表或阅读栏点任意一个 <span class="code">AI</span> 按钮，结果就会出现在这里。</p></div>'
+      : ''
+    return
+  }
   body.innerHTML = renderRich(state.ai.text)
 }
 
@@ -4381,7 +4392,10 @@ function aiSnapshot () {
 
 function applyAiSnapshot (snap) {
   if (!snap) return
-  state.ai.open = snap.open !== false
+  // The dedicated AI frame IS the block, so it must stay visible: hiding it on a
+  // snapshot from a panel that has not run anything yet left the sidebar tab
+  // completely blank.
+  state.ai.open = AI_VIEW ? true : snap.open !== false
   state.ai.busy = snap.busy === true
   state.ai.text = snap.text || ''
   state.ai.error = snap.error || ''
