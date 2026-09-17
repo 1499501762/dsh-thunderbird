@@ -83,6 +83,32 @@ DSH 里一个真实的工作区 + 会话，于是对话、上下文和产出都�
 面板里能做的：打开会话 / 右侧打开 / 重同步（把新邮件重新导出）/ 看 `thread.md` /
 看 `ai-log.md` / 解除。
 
+### 面板可以直接驱动这个会话
+
+DSH 的会话是可以从插件里跑起来的 —— 我一开始看 Inspect 的 `sessions` 目录，只看到
+`open / scope / binding / search / fork`，就下了「不支持」的结论，**那是错的**。
+`ctx.sessions.binding(id)` 返回的绑定对象上挂着真正的会话实例：
+
+```
+binding = { sessionId, session, eventSource, ctx }
+binding.session.prompt(content, mode)   // DSH 自己的输入框调的就是这个
+binding.session.getSnapshot()           // running / promptError / lastAgentError
+binding.session.cancel()
+```
+
+所以面板里的对话不是自建聊天框：
+
+- **发**：面板 → client 半区（postMessage）→ `binding(id).session.prompt([{type:'text',text}], 'queue')`，
+  于是这一轮跑在**那条邮件线真正的 DSH 会话里**，用的是 DSH 的 agent 和它的全部工具；
+- **收**：host 半区用 `ctx.sessions.get(id).snapshotEvents()` 把会话日志读回来
+  （只取 `user/message` / `assistant/message` / `tool/call` 的叶子字段），
+  经 `/api/thunderbird/session/transcript` 给面板渲染 —— 和 DSH 显示的是同一份记录，
+  不存在第二份历史；
+- 第一条 prompt 会自动带上「工作目录是这封邮件」的说明，之后的追问不用重复。
+
+会话行下面就是输入框：回车把问题送进会话，运行中会轮询并显示「模型正在回复…」，
+可以「停止」。
+
 ## 在 DSH 里直接用邮件（模型工具）
 
 host 半区还把这套能力注册成了 DSH 的**模型工具**，所以**任何会话**（不只是邮件会话）
@@ -251,13 +277,27 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
   「插件没起来」和「插件起来了但连不上」。
 - **邮件里的图片不能继承面板的圆角/底色**。`border-radius: 6px` 曾经让 Foxmail 签名图
   变成一个圆角白块；现在 `.content.html img` 只约束尺寸。
-- **白底 bitmap 在暗色下是一块白砖**：白底是画在像素里的，CSS 去不掉。面板会采样图片
-  四边（`scanMailImages`），接近纯白就把这张图判成 logo/emoji 贴图，套
-  `invert(1) hue-rotate(180deg)` —— 这个组合只翻转明度、保留色相，于是白底融进面板底色，
-  蓝色 logo 还是蓝的。远程图片会让 canvas 变脏（跨域），直接跳过。底栏有开关。
-- **主题色全部来自 DSH**：host 上不再维护一套"看起来差不多"的调色板，
-  `mirrorTheme()` 把 13 个 `--dsw-*` token（含 `bg-overlay` / `state-warn` / `specific-sidebar-fill`）
-  映到面板变量上，`--tb-bg-3` 由 `color-mix` 推出来。非 DSH 环境才回退到内置色板。
+- **白底 bitmap 在暗色下是一块白砖**，而一把 `invert()` 会把本来就深色的 logo 也翻坏。
+  现在的做法是**真的处理像素**（`whiteTile()`）：先按四边 flood fill 把近白区域填成透明，
+  再算剩下内容的平均亮度 —— 只有深色内容会被 `invert(1) hue-rotate(180deg)`
+  （用 canvas 的 `filter` 做，浏览器自己的实现）翻成浅色，彩色部分色相不变。
+  结果直接写回 `img.src`，CSS 里不再有 filter。底栏有开关。
+- **远程图片走 host 代理**（`/api/thunderbird/image?url=`）：跨域图片会让 canvas 变脏、
+  永远没法采样；而且这样面板也不用去跟邮件里的追踪域名打交道。代理不可用时
+  `fallbackProxiedImages()` 会把 `src` 还原成原地址，图不会因为代理挂了就不显示。
+- **主题色全部来自 DSH**：`mirrorTheme()` 把 16 个 `--dsw-*` token（含 `bg-overlay`、
+  `state-warn`、`specific-sidebar-fill`、`interactive-bg-hover/active`、`label-tertiary`）
+  映到面板变量上。注意 **DSH 把这些 token 画在 `<body>` 上，不在 `<html>` 上** ——
+  只读 `documentElement` 会全部拿到空值，面板就会一直用自己那套内置色板、跟应用背景对不上。
+  现在按 `html → body → #root → [data-dsh-frame]` 依次找。
+- **DSH 暗色主题的 `brand-primary` 是近白色**（`#f9fafb`），直接当强调色会让「实心主按钮」
+  变成白底白字。现在按亮度推出 `--tb-accent-fg`，hover/active 也直接用 DSH 自己的
+  `--dsw-alias-interactive-bg-hover/active`。
+- **右上角避让**：优先 `--dsh-titlebar-safe-inset-right`；没有就量窗口右上角的控件簇
+  （只扫 `button` / `[role=button]`，且只 reserve 真正压在面板上的那一截）；桌面壳里按钮
+  可能是原生画的、DOM 里量不到，那就只在确实贴到窗口右缘时按 Windows 布局预留 138px。
+  面板自己的 `.bar` 必须用 **padding 长写**，否则一行 `padding: 8px 12px` 会把避让值抹掉
+  —— 这个坑真踩了，表现就是「避让没生效」。
 
 ## 面板顶部与 DSH 桌面版标题栏
 

@@ -675,6 +675,127 @@ export function apply(ctx, config) {
     sendJson(res, 200, { ok: true, removed: true, filesRemoved })
   }
 
+  // A bound thread's conversation lives in a real DSH session, and the host
+  // session store can read it back: Session.snapshotEvents() returns the log, so
+  // the panel shows the same turns DSH shows instead of keeping its own copy.
+  // Only leaf fields cross this boundary — never the live event objects.
+  const transcriptText = (blocks) => {
+    const parts = []
+    for (const block of blocks || []) {
+      if (block && block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
+    }
+    return parts.join('\n').trim()
+  }
+
+  const transcriptHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    await loadStore()
+    const record = sessionRecord(String(param(req.url, 'key') || ''))
+    if (!record) { sendJson(res, 200, { ok: false, error: 'unknown session key' }); return }
+    const limit = Math.min(Math.max(Number(param(req.url, 'limit')) || 60, 1), 200)
+    if (!record.sessionId) { sendJson(res, 200, { ok: true, live: false, running: false, messages: [] }); return }
+
+    const sessions = ctx.get('sessions')
+    if (sessions === undefined) { sendJson(res, 200, { ok: false, error: 'sessions 服务不可用' }); return }
+    const session = sessions.get(record.sessionId)
+    if (session === undefined) {
+      sendJson(res, 200, {
+        ok: true, live: false, running: false, messages: [], seq: 0,
+        note: '会话当前不在内存里（在 DSH 里打开一次就会加载）',
+      })
+      return
+    }
+
+    let running = false
+    let lastTurn = null
+    const messages = []
+    let events = []
+    try { events = session.snapshotEvents() } catch (error) { events = [] }
+    for (const event of events) {
+      if (!event || typeof event.type !== 'string') continue
+      if (event.type === 'turn/start') { running = true; continue }
+      if (event.type === 'turn/end') {
+        running = false
+        const reason = event.data && event.data.reason
+        lastTurn = reason && reason.kind ? String(reason.kind) : null
+        continue
+      }
+      if (event.type === 'user/message') {
+        const text = transcriptText(event.data && event.data.content)
+        if (text) messages.push({ role: 'user', text: clipText(text, 8000), seq: event.seq, time: event.time })
+        continue
+      }
+      if (event.type === 'assistant/message') {
+        const text = transcriptText(event.data && event.data.message && event.data.message.content)
+        const source = event.data && event.data.message && event.data.message.source
+        messages.push({
+          role: 'assistant',
+          text: clipText(text, 12000),
+          model: source && source.model ? String(source.provider || '') + '/' + String(source.model) : '',
+          seq: event.seq,
+          time: event.time,
+        })
+        continue
+      }
+      if (event.type === 'tool/call') {
+        messages.push({ role: 'tool', name: String((event.data && event.data.name) || ''), text: '', seq: event.seq, time: event.time })
+      }
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      live: true,
+      running,
+      lastTurn,
+      seq: messages.length ? messages[messages.length - 1].seq : 0,
+      total: messages.length,
+      messages: messages.slice(-limit),
+    })
+  }
+
+  // Remote images in mail are fetched by this process rather than by the panel.
+  // Two reasons: the panel can then sample them (a cross-origin image taints the
+  // canvas, so a white-backed logo could never be adapted), and the user's mail
+  // client is not the one talking to a tracking host.
+  const imageProxyHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    const target = param(req.url, 'url')
+    if (!target) { sendJson(res, 400, { ok: false, error: 'url query parameter is required' }); return }
+    let parsed
+    try {
+      parsed = new URL(String(target))
+    } catch (error) {
+      sendJson(res, 400, { ok: false, error: 'not a valid url' })
+      return
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      sendJson(res, 400, { ok: false, error: 'only http(s) images' })
+      return
+    }
+    let disposeTimer = null
+    try {
+      const controller = new AbortController()
+      disposeTimer = ctx.timeout(() => controller.abort(), 15000)
+      const upstream = await fetch(parsed.toString(), { signal: controller.signal, redirect: 'follow' })
+      if (!upstream.ok) { sendJson(res, 200, { ok: false, error: 'HTTP ' + upstream.status }); return }
+      const type = upstream.headers.get('content-type') || 'application/octet-stream'
+      if (!/^image\//i.test(type)) { sendJson(res, 200, { ok: false, error: 'not an image: ' + type }); return }
+      const body = Buffer.from(await upstream.arrayBuffer())
+      if (body.length > 6 * 1024 * 1024) { sendJson(res, 200, { ok: false, error: 'image larger than 6 MB' }); return }
+      if (res.writableEnded) return
+      res.writeHead(200, {
+        'content-type': type,
+        'cache-control': 'private, max-age=900',
+        'access-control-allow-origin': '*',
+      })
+      res.end(body)
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    } finally {
+      if (disposeTimer !== null) disposeTimer()
+    }
+  }
+
   const sessionFileHandler = async (req, res) => {
     if (preflight(req, res)) return
     await loadStore()
@@ -933,6 +1054,8 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/log', sessionLogHandler],
     ['/api/thunderbird/session/remove', sessionRemoveHandler],
     ['/api/thunderbird/session/file', sessionFileHandler],
+    ['/api/thunderbird/session/transcript', transcriptHandler],
+    ['/api/thunderbird/image', imageProxyHandler],
   ]
   const disposers = []
   for (let i = 0; i < routes.length; i++) {

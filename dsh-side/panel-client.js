@@ -74,6 +74,7 @@ window.__ModuleLoader__.load({
     var frameEl = null
     var stateEl = null
     var shieldEl = null
+    var barEl = null
     var observer = null
     var open = false
     var probeTimer = null
@@ -219,6 +220,36 @@ window.__ModuleLoader__.load({
       return isFinite(px) && px > 0 ? px : 36
     }
 
+    // The window's caption buttons are not part of this document's layout, so
+    // the bar has to reserve their width or the refresh control lands under them.
+    function captionInset () {
+      var declared = parseFloat(getComputedStyle(document.body).getPropertyValue('--dsh-titlebar-safe-inset-right'))
+      if (isFinite(declared) && declared > 0) return declared
+      var panelRight = window.innerWidth
+      if (frameEl !== null) {
+        try { panelRight = frameEl.getBoundingClientRect().right } catch (error) { /* detached */ }
+      }
+      var minLeft = panelRight
+      var nodes = document.querySelectorAll('button, [role="button"]')
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i]
+        if (node.closest && node.closest(VIEW_SELECTOR) !== null) continue
+        var rect = node.getBoundingClientRect()
+        if (rect.width < 12 || rect.height === 0 || rect.height > 64) continue
+        if (rect.top > 12) continue
+        if (rect.right < panelRight - 6) continue
+        if (rect.left < minLeft) minLeft = rect.left
+      }
+      var inset = panelRight - minLeft
+      if (isFinite(inset) && inset >= 12) return Math.min(inset + 12, 200)
+      // In the desktop shell the caption buttons may be native, so the DOM has
+      // nothing to measure; reserve the Windows cluster when this bar really
+      // reaches the window edge. macOS keeps those buttons on the left.
+      var shell = document.querySelector('#dsh-desktop-windows-drag-region') !== null
+      if (shell && panelRight >= window.innerWidth - 8 && /Windows/i.test(String(navigator.userAgent || ''))) return 138
+      return 0
+    }
+
     function syncShield () {
       if (!open) {
         if (shieldEl !== null) shieldEl.remove()
@@ -238,6 +269,7 @@ window.__ModuleLoader__.load({
       shieldEl.style.width = Math.round(rect.width) + 'px'
       shieldEl.style.top = '0px'
       shieldEl.style.height = stripHeight() + 'px'
+      if (barEl !== null) barEl.style.paddingRight = (12 + captionInset()) + 'px'
     }
 
     function ensureView () {
@@ -264,6 +296,7 @@ window.__ModuleLoader__.load({
         stateWrap,
         refresh,
       ])
+      barEl = bar
 
       // `shielded=1` tells the panel it may use the full height: the no-drag
       // shield below carves this strip out of the window drag region.
@@ -469,8 +502,72 @@ window.__ModuleLoader__.load({
           } catch (error) {
             replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })
           }
+          return
+        }
+
+        // Driving a session: ctx.sessions.binding(id) hands back the client-side
+        // session object, and its prompt() is exactly what the DSH composer
+        // calls. The panel can therefore run a turn inside the thread's real
+        // session instead of only making its own one-shot model call.
+        if (msg.type === 'session/prompt' || msg.type === 'session/cancel' || msg.type === 'session/state') {
+          handleSessionOp(ctx, msg, event.source)
         }
       }
+    }
+
+    function mailSession (ctx, sessionId) {
+      var sessions = serviceOf(ctx, 'sessions')
+      if (sessions === undefined) throw new Error('DSH sessions 服务不可用')
+      if (!sessionId) throw new Error('缺少 sessionId')
+      var binding = sessions.binding(String(sessionId))
+      if (!binding || !binding.session) throw new Error('DSH 里还没有这个会话的客户端绑定')
+      return binding.session
+    }
+
+    function handleSessionOp (ctx, msg, source) {
+      var fail = function (error) {
+        replyTo(source, msg.id, { ok: false, error: String((error && error.message) || error) })
+      }
+      var session
+      try {
+        session = mailSession(ctx, msg.sessionId)
+      } catch (error) { fail(error); return }
+
+      if (msg.type === 'session/state') {
+        try {
+          var snap = session.getSnapshot()
+          replyTo(source, msg.id, {
+            ok: true,
+            result: {
+              running: snap.running === true,
+              awaitingFirstTurn: snap.awaitingFirstTurn === true,
+              promptError: snap.promptError ? String(snap.promptError.message || snap.promptError) : '',
+              lastAgentError: snap.lastAgentError ? String(snap.lastAgentError.message || snap.lastAgentError) : '',
+            },
+          })
+        } catch (error) { fail(error) }
+        return
+      }
+
+      if (msg.type === 'session/cancel') {
+        Promise.resolve().then(function () { return session.cancel() })
+          .then(function () { replyTo(source, msg.id, { ok: true, result: true }) })
+          .catch(fail)
+        return
+      }
+
+      var mode = msg.mode === 'steer' ? 'steer' : 'queue'
+      Promise.resolve()
+        .then(function () { return session.prompt([{ type: 'text', text: String(msg.text || '') }], mode) })
+        .then(function (result) {
+          if (result && result.ok === false) {
+            var detail = result.error || {}
+            fail(new Error(String(detail.code || 'prompt') + (detail.message ? ': ' + String(detail.message) : '')))
+            return
+          }
+          replyTo(source, msg.id, { ok: true, result: true })
+        })
+        .catch(fail)
     }
 
     function apply (ctx) {
@@ -500,6 +597,7 @@ window.__ModuleLoader__.load({
             viewEl = null
             frameEl = null
             stateEl = null
+            barEl = null
           }
         }, 'dsh-thunderbird: ui')
       }

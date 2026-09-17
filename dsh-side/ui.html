@@ -19,6 +19,9 @@
     --tb-text: #1c1c1e;
     --tb-text-dim: #6b6b74;
     --tb-accent: #3b6ef6;
+    --tb-accent-fg: #ffffff;
+    --tb-hover: rgba(15, 17, 21, .06);
+    --tb-active: rgba(15, 17, 21, .11);
     --tb-ok: #2e9e5b;
     --tb-warn: #b8791a;
     --tb-err: #d0453f;
@@ -41,6 +44,9 @@
       --tb-text: #e9e9ec;
       --tb-text-dim: #9a9ba4;
       --tb-accent: #7aa2ff;
+      --tb-accent-fg: #0f1115;
+      --tb-hover: rgba(255, 255, 255, .07);
+      --tb-active: rgba(255, 255, 255, .13);
       --tb-ok: #4cc07b;
       --tb-warn: #e0a63f;
       --tb-err: #ef6b64;
@@ -153,13 +159,11 @@
     background: transparent;
     box-shadow: none;
   }
-  /* A logo or an emoji pasted by Outlook/Foxmail is a white-background bitmap.
-     On a dark panel that reads as a white tile. The scanner in scanMailImages()
-     flags those images and this standard dark-mode filter flips lightness while
-     keeping hue, so white becomes the panel background and colours survive. */
-  html.tb-dark .content.html img.tb-invert-white {
-    filter: invert(1) hue-rotate(180deg);
-  }
+  /* A white-backed logo/emoji is re-drawn on a canvas by whiteTile(): the white
+     border becomes transparent, and dark artwork is lightness-flipped so it
+     stays visible. The pixels are already correct, so no CSS filter here — only
+     a marker class and, for the flipped case, the panel's own surface. */
+  html.tb-dark .content.html img.tb-invert-white { background: transparent; }
   .content.html a { color: var(--tb-accent); }
   .content.html blockquote { border-left: 3px solid var(--tb-border-strong); margin-left: 0; padding-left: 12px; color: var(--tb-text-dim); }
   .content.html table { border-collapse: collapse; }
@@ -223,6 +227,18 @@
   .sess .actions { margin-top: 8px; }
   .chip.ok { color: var(--tb-ok); border-color: color-mix(in srgb, var(--tb-ok) 40%, transparent); }
   .chip.warn { color: var(--tb-warn); border-color: color-mix(in srgb, var(--tb-warn) 40%, transparent); }
+  /* The conversation inside a bound thread: the same turns DSH renders. */
+  .chat { margin-top: 10px; border-top: 1px solid var(--tb-border); padding-top: 9px; }
+  .chat-status { font-size: 11.5px; color: var(--tb-text-dim); margin-bottom: 7px; }
+  .chat-status.err { color: var(--tb-err); }
+  .chat-log { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; margin-bottom: 9px; }
+  .chat-msg { border-radius: var(--tb-r-md); padding: 8px 10px; font-size: 12.5px; line-height: 1.72; white-space: pre-wrap; word-break: break-word; }
+  .chat-msg.user { background: color-mix(in srgb, var(--tb-accent) 13%, transparent); }
+  .chat-msg.assistant { background: var(--tb-bg-1); border: 1px solid var(--tb-border); }
+  .chat-msg.tool { background: transparent; border: 1px dashed var(--tb-border); color: var(--tb-text-dim); font-size: 11px; padding: 3px 8px; align-self: flex-start; }
+  .chat-who { font-size: 10.5px; color: var(--tb-text-dim); margin-bottom: 3px; font-weight: 600; }
+  .chat-input { display: flex; gap: 6px; }
+  .chat-input .input { flex: 1; }
   /* ---------- visual pass: consistent radii, quiet surfaces, clearer focus ---------- */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-thumb { background: var(--tb-border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
@@ -268,7 +284,11 @@
     position: relative;
     z-index: 5;
     gap: 7px;
+    /* Longhands on purpose: a `padding` shorthand here would wipe the titlebar
+       strip and caption-button clearance set at the top of this sheet. */
     padding: 8px 12px;
+    padding-top: calc(8px + var(--tb-inset-top, 0px));
+    padding-right: calc(12px + var(--tb-inset-right, 0px));
     background: color-mix(in srgb, var(--tb-bg-1) 88%, transparent);
     backdrop-filter: blur(10px);
     border-bottom: 1px solid var(--tb-border);
@@ -306,15 +326,15 @@
     color: var(--tb-text-dim);
     transition: background .12s, color .12s, border-color .12s;
   }
-  .btn:hover { background: var(--tb-bg-2); color: var(--tb-text); border-color: var(--tb-border-strong); }
-  .btn:active { background: var(--tb-bg-3); }
+  .btn:hover { background: var(--tb-hover); color: var(--tb-text); border-color: var(--tb-border-strong); }
+  .btn:active { background: var(--tb-active); }
   .btn.primary {
     background: color-mix(in srgb, var(--tb-accent) 92%, transparent);
     border-color: transparent;
-    color: #fff;
+    color: var(--tb-accent-fg);
     font-weight: 600;
   }
-  .btn.primary:hover { background: var(--tb-accent); color: #fff; }
+  .btn.primary:hover { background: var(--tb-accent); color: var(--tb-accent-fg); }
   /* A toggled button, not the page's primary action: tint, never fill. */
   .btn.on {
     background: color-mix(in srgb, var(--tb-accent) 16%, transparent);
@@ -1043,11 +1063,12 @@ function renderReader () {
   var content = document.createElement('div')
   if (state.showHtml && state.body.html) {
     content.className = 'content html'
-    content.innerHTML = resolveCidImages(sanitize(state.body.html), message.id)
+    content.innerHTML = resolveCidImages(proxyRemoteImages(sanitize(state.body.html)), message.id)
     content.addEventListener('click', function (event) {
       var anchor = event.target && event.target.closest ? event.target.closest('a') : null
       if (anchor) event.preventDefault()
     })
+    fallbackProxiedImages(content)
     scanMailImages(content)
   } else {
     content.className = 'content'
@@ -1074,6 +1095,39 @@ function renderReader () {
     }
     host.appendChild(chipsTitle)
     host.appendChild(chips)
+  }
+}
+
+// Remote images are pulled through the host instead of the panel: a
+// cross-origin image taints the canvas, so it could never be sampled for the
+// white-tile treatment, and this also keeps the panel from talking to whatever
+// tracking host the mail pointed at.
+function proxyRemoteImages (html) {
+  return String(html || '').replace(/(src)=(["'])https?:\/\/([^"']+)\2/gi, function (whole, attr, quote, rest) {
+    var url = ('https://' + rest).replace(/&amp;/g, '&')
+    return attr + '=' + quote + '/api/thunderbird/image?url=' + encodeURIComponent(url) + quote
+  })
+}
+
+// If the host proxy is unavailable (an older host half, a blocked request) the
+// picture must still appear, so fall back to the address the mail carried.
+function fallbackProxiedImages (root) {
+  var images = root.querySelectorAll('img[src^="/api/thunderbird/image"]')
+  for (var i = 0; i < images.length; i++) {
+    (function (img) {
+      var src = img.getAttribute('src') || ''
+      var at = src.indexOf('url=')
+      if (at < 0) return
+      var original = ''
+      try { original = decodeURIComponent(src.slice(at + 4)) } catch (error) { return }
+      if (!original) return
+      img.addEventListener('error', function () {
+        if (img.dataset.tbFallback === '1') return
+        img.dataset.tbFallback = '1'
+        img.dataset.tbScanned = '1'
+        img.src = original
+      }, { once: true })
+    })(images[i])
   }
 }
 
@@ -1118,13 +1172,89 @@ function loadInlineImages (messageId) {
   })
 }
 
-// A white background painted INSIDE a bitmap cannot be removed by CSS. Such
-// images are almost always a logo or a pasted emoji, so classify each one by
-// sampling its border: when the frame is nearly all white the picture is a tile
-// on a white canvas, and the dark theme flips its lightness (tb-invert-white).
-// Remote images taint the canvas; those are simply left alone.
+// A white background painted INSIDE a bitmap cannot be removed by CSS, and a
+// blanket invert() wrecked logos that were designed dark. Instead: flood-fill
+// the near-white border region out to transparent, then flip lightness only
+// when what remains would be invisible on a dark panel. Colours are preserved
+// because the flip is the standard invert(1) + hue-rotate(180deg) pair, applied
+// by the browser's own filter on a throwaway canvas.
+function whiteTile (img) {
+  var w = img.naturalWidth
+  var h = img.naturalHeight
+  if (!w || !h || w * h > 4000000) return false
+  var canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  var ctx = canvas.getContext('2d', { willReadFrequently: true })
+  ctx.drawImage(img, 0, 0)
+
+  var frame
+  try { frame = ctx.getImageData(0, 0, w, h) } catch (error) { return false } // remote image
+  var px = frame.data
+  var nearWhite = function (i) {
+    if (px[i + 3] < 40) return true
+    var r = px[i]
+    var g = px[i + 1]
+    var b = px[i + 2]
+    var min = Math.min(r, g, b)
+    var max = Math.max(r, g, b)
+    return min > 224 && (max - min) < 24
+  }
+
+  var seen = new Uint8Array(w * h)
+  var stack = []
+  for (var x = 0; x < w; x++) { stack.push(x, (h - 1) * w + x) }
+  for (var y = 0; y < h; y++) { stack.push(y * w, y * w + w - 1) }
+  var removed = 0
+  var opaque = 0
+  var lumaSum = 0
+  while (stack.length > 0) {
+    var p = stack.pop()
+    if (p < 0 || p >= w * h || seen[p] === 1) continue
+    seen[p] = 1
+    var at = p * 4
+    if (!nearWhite(at)) continue
+    px[at + 3] = 0
+    removed++
+    var cx = p % w
+    var cy = (p - cx) / w
+    if (cx > 0) stack.push(p - 1)
+    if (cx < w - 1) stack.push(p + 1)
+    if (cy > 0) stack.push(p - w)
+    if (cy < h - 1) stack.push(p + w)
+  }
+  // A real white-backed tile loses most of its border; anything less is a photo
+  // or a designed banner, and is left alone.
+  if (removed < w * h * 0.2) return false
+
+  for (var k = 0; k < w * h; k++) {
+    var i2 = k * 4
+    if (px[i2 + 3] < 40) continue
+    opaque++
+    lumaSum += 0.2126 * px[i2] + 0.7152 * px[i2 + 1] + 0.0722 * px[i2 + 2]
+  }
+  if (opaque === 0) return false
+  var darkContent = lumaSum / opaque < 140
+
+  ctx.putImageData(frame, 0, 0)
+  var out = canvas
+  if (darkContent) {
+    out = document.createElement('canvas')
+    out.width = w
+    out.height = h
+    var ctx2 = out.getContext('2d')
+    ctx2.filter = 'invert(1) hue-rotate(180deg)'
+    ctx2.drawImage(canvas, 0, 0)
+  }
+  try {
+    img.src = out.toDataURL('image/png')
+    return true
+  } catch (error) { return false }
+}
+
 function scanMailImages (root) {
   if (state.invertMailImages === false) return
+  if (!document.documentElement.classList.contains('tb-dark')) return
   var images = root.querySelectorAll('img')
   for (var i = 0; i < images.length; i++) classifyMailImage(images[i])
 }
@@ -1134,39 +1264,9 @@ function classifyMailImage (img) {
   img.dataset.tbScanned = '1'
   var run = function () {
     try {
-      if (!img.naturalWidth || !img.naturalHeight) return
-      var n = 12
-      var canvas = document.createElement('canvas')
-      canvas.width = n
-      canvas.height = n
-      var ctx = canvas.getContext('2d')
-      ctx.drawImage(img, 0, 0, n, n)
-      var pixels = ctx.getImageData(0, 0, n, n).data
-      var light = 0
-      var edge = 0
-      var edgeLight = 0
-      for (var y = 0; y < n; y++) {
-        for (var x = 0; x < n; x++) {
-          var offset = (y * n + x) * 4
-          var alpha = pixels[offset + 3] / 255
-          // a transparent pixel shows the panel through, which is already fine
-          var isLight = alpha < 0.5
-          if (!isLight) {
-            var lum = (0.2126 * pixels[offset] + 0.7152 * pixels[offset + 1] + 0.0722 * pixels[offset + 2]) / 255
-            isLight = lum > 0.86
-          }
-          if (isLight) light++
-          if (x === 0 || y === 0 || x === n - 1 || y === n - 1) {
-            edge++
-            if (isLight) edgeLight++
-          }
-        }
-      }
-      var total = n * n
-      if (light / total > 0.5 && edgeLight / Math.max(1, edge) > 0.7) {
-        img.classList.add('tb-invert-white')
-      }
-    } catch (error) { /* tainted canvas: a remote image, leave it as sent */ }
+      if (!document.documentElement.classList.contains('tb-dark')) return
+      if (whiteTile(img)) img.classList.add('tb-invert-white')
+    } catch (error) { /* a tainted canvas or a broken image: leave it as sent */ }
   }
   if (img.complete) run()
   else img.addEventListener('load', run, { once: true })
@@ -1719,22 +1819,91 @@ function isDarkColor (value) {
   return false
 }
 
+// DSH paints its tokens on <body>, not on <html> — reading :root only ever came
+// back empty, which is why the panel kept its built-in palette and never matched
+// the app's background. Try every surface the app might have used.
+function themeHosts (doc) {
+  var hosts = []
+  var push = function (node) { if (node && hosts.indexOf(node) < 0) hosts.push(node) }
+  push(doc.documentElement)
+  push(doc.body)
+  push(doc.getElementById('root'))
+  push(doc.querySelector("[data-dsh-frame]"))
+  push(doc.querySelector("[class*='frame']"))
+  return hosts
+}
+
+function readToken (win, hosts, name) {
+  for (var i = 0; i < hosts.length; i++) {
+    var value = win.getComputedStyle(hosts[i]).getPropertyValue(name)
+    if (value && value.trim()) return value.trim()
+  }
+  return ''
+}
+
+// The window's caption buttons are drawn by the shell, not by this frame's
+// layout, so their width has to be reserved by hand. Prefer the declared token;
+// otherwise measure the control cluster pinned to the window's top-right corner
+// and reserve only the part that actually overlaps the panel.
+function captionInset (doc, win, hosts) {
+  var declared = parseFloat(readToken(win, hosts, '--dsh-titlebar-safe-inset-right'))
+  if (isFinite(declared) && declared > 0) return declared
+
+  var frame = win.frameElement
+  var panelRight = win.innerWidth
+  try {
+    if (frame) panelRight = frame.getBoundingClientRect().right
+  } catch (error) { /* cross-origin frame: fall back to the viewport */ }
+
+  var minLeft = panelRight
+  // Only actual controls: a generic element scan latches onto layout furniture
+  // and reserves half the window.
+  var nodes = doc.querySelectorAll('button, [role="button"]')
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i]
+    // never measure our own panel chrome
+    if (node.closest && node.closest("[data-dsh-thunderbird-view]") !== null) continue
+    var rect = node.getBoundingClientRect()
+    if (rect.width < 12 || rect.height === 0 || rect.height > 64) continue
+    if (rect.top > 12) continue
+    if (rect.right < panelRight - 6) continue
+    if (rect.left < minLeft) minLeft = rect.left
+  }
+  var inset = panelRight - minLeft
+  if (isFinite(inset) && inset >= 12) {
+    // Windows-style caption clusters are ~138px; anything wider means the scan
+    // latched onto a toolbar rather than the window buttons.
+    return Math.min(inset + 12, 200)
+  }
+  // Nothing measurable in the DOM: in the desktop shell the caption buttons can
+  // be drawn natively, and only the declared token knows about them. If the
+  // panel really does reach the window's right edge, reserve the cluster anyway
+  // — but never on macOS, where those buttons live on the left.
+  var shell = doc.querySelector('#dsh-desktop-windows-drag-region') !== null ||
+    doc.querySelector("[data-dsh-windows-drag-region]") !== null
+  if (shell && panelRight >= win.innerWidth - 8) {
+    var ua = String((win.navigator && win.navigator.userAgent) || '')
+    if (/Windows/i.test(ua)) return 138
+  }
+  return 0
+}
+
 function mirrorTheme () {
   try {
     if (!window.parent || window.parent === window) return
-    var root = window.parent.document.documentElement
-    var cs = window.parent.getComputedStyle(root)
+    var doc = window.parent.document
+    var win = window.parent
+    var hosts = themeHosts(doc)
     // DSH Desktop reserves the top strip for the native window drag region; its
     // no-drag opt-out is a CSS rule in the parent document, so it cannot reach
     // inside this frame. Keep every control below that strip instead.
-    var inset = cs.getPropertyValue('--dsh-titlebar-safe-inset-top')
+    var inset = readToken(win, hosts, '--dsh-titlebar-safe-inset-top')
     // When the client half carves the strip out of the window drag region it
     // appends ?shielded=1, and the panel may then use the full height.
     var shielded = String(location.search || '').indexOf('shielded=1') >= 0
-    document.documentElement.style.setProperty('--tb-inset-top', shielded ? '0px' : ((inset && inset.trim()) || '0px'))
-    // Only the caption buttons need clearance; read their width, not the strip height.
-    var insetRight = cs.getPropertyValue('--dsh-titlebar-safe-inset-right')
-    document.documentElement.style.setProperty('--tb-inset-right', (insetRight && insetRight.trim()) || '0px')
+    document.documentElement.style.setProperty('--tb-inset-top', shielded ? '0px' : (inset || '0px'))
+    document.documentElement.style.setProperty('--tb-inset-right', captionInset(doc, win, hosts) + 'px')
+
     // Every colour the panel paints comes from DSH's own theme tokens, so the
     // mail panel is the same surface as the app around it rather than a
     // lookalike palette that drifts when the user changes theme.
@@ -1748,7 +1917,10 @@ function mirrorTheme () {
       '--dsw-alias-border-l2': ['--tb-border-strong'],
       '--dsw-alias-label-primary': ['--tb-text'],
       '--dsw-alias-label-secondary': ['--tb-text-dim'],
+      '--dsw-alias-label-tertiary': ['--tb-text-dim'],
       '--dsw-alias-brand-primary': ['--tb-accent'],
+      '--dsw-alias-interactive-bg-hover': ['--tb-hover'],
+      '--dsw-alias-interactive-bg-active': ['--tb-active'],
       '--dsw-alias-state-success-primary': ['--tb-ok'],
       '--dsw-alias-state-warn-primary': ['--tb-warn'],
       '--dsw-alias-state-error-primary': ['--tb-err'],
@@ -1756,9 +1928,8 @@ function mirrorTheme () {
     var names = Object.keys(map)
     var seen = {}
     for (var i = 0; i < names.length; i++) {
-      var value = cs.getPropertyValue(names[i])
-      if (!value || !value.trim()) continue
-      value = value.trim()
+      var value = readToken(win, hosts, names[i])
+      if (!value) continue
       document.documentElement.style.setProperty(names[i], value)
       var targets = map[names[i]]
       for (var t = 0; t < targets.length; t++) {
@@ -1771,8 +1942,20 @@ function mirrorTheme () {
     if (!seen['--tb-bg-1'] && seen['--tb-sidebar']) {
       document.documentElement.style.setProperty('--tb-bg-1', 'var(--tb-sidebar)')
     }
+    // DSH's dark theme uses a near-white brand colour, so a filled primary
+    // button needs its foreground picked by contrast instead of assumed white.
+    if (seen['--tb-accent']) {
+      document.documentElement.style.setProperty(
+        '--tb-accent-fg', isDarkColor(readToken(win, hosts, '--dsw-alias-brand-primary')) ? '#ffffff' : '#0f1115')
+    }
     // One derived surface for hover/active, so it always sits between layer-2
     // and the text colour of whichever theme is active.
+    if (!seen['--tb-hover']) {
+      document.documentElement.style.setProperty(
+        '--tb-hover', 'color-mix(in srgb, var(--tb-text) 8%, transparent)')
+      document.documentElement.style.setProperty(
+        '--tb-active', 'color-mix(in srgb, var(--tb-text) 14%, transparent)')
+    }
     document.documentElement.style.setProperty(
       '--tb-bg-3', 'color-mix(in srgb, var(--tb-bg-2) 82%, var(--tb-text) 10%)')
     var probed = document.documentElement.style.getPropertyValue('--tb-bg')
@@ -1780,6 +1963,12 @@ function mirrorTheme () {
       ? isDarkColor(probed)
       : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
     document.documentElement.classList.toggle('tb-dark', dark)
+    // The white-tile treatment only applies in the dark theme, so a theme switch
+    // has to re-render whatever HTML body is on screen.
+    if (state.lastDark !== dark) {
+      state.lastDark = dark
+      if (state.body && state.body.html && state.showHtml) renderReader()
+    }
   } catch (error) { /* cross-origin or no parent: keep the built-in palette */ }
 }
 
@@ -2288,6 +2477,166 @@ function showSessionFile (record, file) {
     .catch(function (error) { setError(String((error && error.message) || error)) })
 }
 
+// ---- conversation with the bound session ---------------------------------
+// The thread's conversation is a real DSH session, so the panel both drives it
+// (through the client half) and renders it (from the host's session log). No
+// second copy of the history exists: this is the same log DSH shows.
+
+var chats = {}
+
+function chatOf (key) {
+  if (!chats[key]) {
+    chats[key] = { messages: [], running: false, live: false, note: '', error: '', loaded: false, timer: null, sending: false }
+  }
+  return chats[key]
+}
+
+function loadTranscript (record) {
+  var chat = chatOf(record.key)
+  return fetch('/api/thunderbird/session/transcript?key=' + encodeURIComponent(record.key) + '&limit=60', { cache: 'no-store' })
+    .then(function (res) { return res.json().catch(function () { return null }) })
+    .then(function (out) {
+      chat.loaded = true
+      if (!out || out.ok !== true) {
+        chat.error = (out && out.error) || '读不到会话记录'
+        return chat
+      }
+      chat.messages = out.messages || []
+      chat.running = out.running === true
+      chat.live = out.live === true
+      chat.note = out.note || ''
+      chat.error = ''
+      return chat
+    })
+    .catch(function (error) {
+      chat.loaded = true
+      chat.error = String((error && error.message) || error)
+      return chat
+    })
+}
+
+function watchTranscript (record) {
+  var chat = chatOf(record.key)
+  if (chat.timer) return
+  chat.timer = setInterval(function () {
+    if ($('sessions').hidden) return
+    loadTranscript(record).then(function () {
+      renderSessions()
+      if (!chat.running) { clearInterval(chat.timer); chat.timer = null }
+    })
+  }, 2200)
+}
+
+function sendToSession (record, text) {
+  var chat = chatOf(record.key)
+  var value = String(text || '').trim()
+  if (!value) return
+  chat.error = ''
+  chat.sending = true
+  renderSessions()
+  // The first prompt of a session carries the standing context, so the agent
+  // knows the working directory is this thread and does not need to be told
+  // again on every follow-up.
+  var prompt = chat.messages.length === 0
+    ? '这个会话的工作目录是一封（或一条）邮件：`thread.md` 是邮件正文，`ai-log.md` 是之前的 AI 记录。请按需读取。\n\n' + value
+    : value
+  dshCall('session/prompt', { sessionId: record.sessionId, text: prompt, mode: 'queue' }, 90000)
+    .then(function () {
+      chat.sending = false
+      return loadTranscript(record)
+    })
+    .then(function () {
+      renderSessions()
+      watchTranscript(record)
+    })
+    .catch(function (error) {
+      chat.sending = false
+      chat.error = String((error && error.message) || error)
+      renderSessions()
+    })
+}
+
+function stopSession (record) {
+  dshCall('session/cancel', { sessionId: record.sessionId }, 20000)
+    .then(function () { return loadTranscript(record) })
+    .then(renderSessions)
+    .catch(function (error) { setError(String((error && error.message) || error)) })
+}
+
+function chatBlock (record) {
+  var chat = chatOf(record.key)
+  var wrap = document.createElement('div')
+  wrap.className = 'chat'
+
+  var status = document.createElement('div')
+  status.className = 'chat-status'
+  if (!record.sessionId) status.textContent = '还没有会话，先完成挂载'
+  else if (chat.error) status.textContent = chat.error
+  else if (!chat.loaded) status.textContent = '正在读取会话…'
+  else if (!chat.live) status.textContent = chat.note || '会话当前不在内存里'
+  else if (chat.running) status.textContent = '模型正在回复…'
+  else status.textContent = chat.messages.length ? '空闲 · ' + chat.messages.length + ' 条记录' : '还没有对话，下面说点什么'
+  if (chat.error) status.className += ' err'
+  wrap.appendChild(status)
+
+  if (chat.messages.length) {
+    var log = document.createElement('div')
+    log.className = 'chat-log'
+    for (var i = 0; i < chat.messages.length; i++) {
+      var item = chat.messages[i]
+      var row = document.createElement('div')
+      row.className = 'chat-msg ' + item.role
+      if (item.role === 'tool') {
+        row.textContent = '🔧 ' + (item.name || 'tool')
+      } else {
+        var who = document.createElement('div')
+        who.className = 'chat-who'
+        who.textContent = item.role === 'user' ? '你' : (item.model || '模型')
+        var body = document.createElement('div')
+        body.className = 'chat-text'
+        body.textContent = item.text
+        row.appendChild(who)
+        row.appendChild(body)
+      }
+      log.appendChild(row)
+    }
+    log.scrollTop = log.scrollHeight
+    wrap.appendChild(log)
+  }
+
+  if (record.sessionId) {
+    var form = document.createElement('div')
+    form.className = 'chat-input'
+    var input = document.createElement('input')
+    input.className = 'input'
+    input.placeholder = '就这条邮件线问一句…（回车发送）'
+    input.value = chat.draft || ''
+    input.oninput = function () { chat.draft = input.value }
+    input.onkeydown = function (event) {
+      if (event.key === 'Enter') { event.preventDefault(); sendToSession(record, input.value); chat.draft = '' }
+    }
+    form.appendChild(input)
+    if (chat.running) {
+      form.appendChild(button('停止', function () { stopSession(record) }))
+    } else {
+      form.appendChild(button(chat.sending ? '发送中…' : '发送', function () {
+        sendToSession(record, input.value)
+        chat.draft = ''
+      }))
+    }
+    wrap.appendChild(form)
+    if (!chat.loaded && !chat.loading) {
+      chat.loading = true
+      loadTranscript(record).then(function (result) {
+        chat.loading = false
+        if (result.running) watchTranscript(record)
+        if (!$('sessions').hidden) renderSessions()
+      })
+    }
+  }
+  return wrap
+}
+
 function sessionRow (record) {
   var row = document.createElement('div')
   row.className = 'sess'
@@ -2336,6 +2685,7 @@ function sessionRow (record) {
   actions.appendChild(button('AI 记录', function () { showSessionFile(record, 'ai-log.md') }))
   actions.appendChild(button('解除', function () { removeThreadSession(record) }))
   row.appendChild(actions)
+  row.appendChild(chatBlock(record))
   return row
 }
 

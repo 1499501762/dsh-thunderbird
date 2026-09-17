@@ -24,6 +24,27 @@ process.env.DSH_HOME = home
 const routes = new Map()
 const effects = []
 const registeredTools = new Map()
+// Stand-in for one live DSH session: the transcript endpoint reads
+// snapshotEvents() off whatever ctx.sessions.get(id) returns.
+const fakeEvents = [
+  { type: 'turn/start', seq: 1, time: 1000, data: { turn: 1 } },
+  { type: 'user/message', seq: 2, time: 1001, data: { id: 'm1', role: 'user', content: [{ type: 'text', text: '这条线讲了什么？' }], source: { kind: 'user' } } },
+  { type: 'tool/call', seq: 3, time: 1002, data: { turn: 1, step: 1, callId: 'c1', name: 'thunderbird_thread', arguments: '{}' } },
+  {
+    type: 'assistant/message',
+    seq: 4,
+    time: 1003,
+    data: {
+      turn: 1,
+      step: 1,
+      message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: '这是一条测试回复。' }], source: { kind: 'model', provider: 'p', model: 'm' } },
+      stream: [],
+    },
+  },
+  { type: 'turn/end', seq: 5, time: 1004, data: { turn: 1, reason: { kind: 'completed' } } },
+]
+const liveSessions = new Map([['sess-test', { snapshotEvents: () => fakeEvents }]])
+const stubSessions = { get: (id) => liveSessions.get(String(id)) }
 const stub = {
   webServer: {
     register (route) {
@@ -37,6 +58,7 @@ const stub = {
       return () => registeredTools.delete(definition.name)
     },
   },
+  sessions: stubSessions,
   timeout (callback, delay) {
     const timer = setTimeout(callback, delay)
     return () => clearTimeout(timer)
@@ -46,7 +68,7 @@ const stub = {
     effects.push(disposer)
     return () => { if (typeof disposer === 'function') disposer() }
   },
-  get (name) { return name === 'tools' ? this.tools : undefined },
+  get (name) { return this[name] },
 }
 
 const mod = await import(new URL('../dsh-side/thunderbird-host.mjs', import.meta.url))
@@ -162,6 +184,22 @@ check('session/attach ok', attached.ok === true && attached.session.sessionId ==
 const listed = await get('/api/thunderbird/session/list')
 check('registry lists the binding', listed.sessions.length === 1 && listed.sessions[0].sessionId === 'sess-test')
 check('registry counts the ai record', listed.sessions[0].aiCount === 1)
+
+// The bound conversation is read back from the real DSH session log.
+const transcript = await get('/api/thunderbird/session/transcript?key=' + record.key)
+check('transcript reads the live session', transcript.ok === true && transcript.live === true, transcript.error || '')
+check('transcript reports the turn state', transcript.running === false && transcript.lastTurn === 'completed')
+check('transcript keeps roles and text',
+  transcript.messages.length === 3 &&
+  transcript.messages[0].role === 'user' && transcript.messages[0].text === '这条线讲了什么？' &&
+  transcript.messages[1].role === 'tool' && transcript.messages[1].name === 'thunderbird_thread' &&
+  transcript.messages[2].role === 'assistant' && transcript.messages[2].text === '这是一条测试回复。',
+  JSON.stringify(transcript.messages.map((m) => m.role)))
+
+liveSessions.delete('sess-test')
+const cold = await get('/api/thunderbird/session/transcript?key=' + record.key)
+check('transcript degrades when the session is not loaded', cold.ok === true && cold.live === false && cold.messages.length === 0)
+liveSessions.set('sess-test', { snapshotEvents: () => fakeEvents })
 
 const file = await get('/api/thunderbird/session/file?key=' + record.key + '&file=ai-log.md')
 check('session/file reads the log', file.ok === true && file.text.includes('这是一条记录。'))
