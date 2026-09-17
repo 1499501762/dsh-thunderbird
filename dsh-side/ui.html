@@ -531,7 +531,7 @@
     <span id="f-unread">未读 0</span>
     <span id="f-handled">已处理命令 0</span>
     <span class="grow"></span>
-    <button class="linkbtn" id="f-imgfit" title="邮件里白底的 logo / emoji 在暗色下会变成白色方块，开启后按亮度翻转">图片暗色适配：开</button>
+    <button class="linkbtn" id="f-imgfit" title="白底的 logo / emoji 在暗色下会变成白色方块：开启后按四边去白底，内容确实很暗时才翻明度。点邮件里的任意图片可以逐张切换处理方式">图片暗色适配：开</button>
     <button class="linkbtn" id="f-keys" title="j/k 上下封 · r 回复 · s 星标 · u 已读 · S 总结 · / 搜索 · g 聚合 · Esc 关面板">快捷键</button>
     <span class="code">/api/thunderbird/poll</span>
   </div>
@@ -1065,7 +1065,13 @@ function renderReader () {
     content.className = 'content html'
     content.innerHTML = resolveCidImages(proxyRemoteImages(sanitize(state.body.html)), message.id)
     content.addEventListener('click', function (event) {
-      var anchor = event.target && event.target.closest ? event.target.closest('a') : null
+      var target = event.target
+      if (target && target.tagName === 'IMG' && target.dataset.tbKey) {
+        event.preventDefault()
+        cycleImageMode(target)
+        return
+      }
+      var anchor = target && target.closest ? target.closest('a') : null
       if (anchor) event.preventDefault()
     })
     fallbackProxiedImages(content)
@@ -1174,11 +1180,13 @@ function loadInlineImages (messageId) {
 
 // A white background painted INSIDE a bitmap cannot be removed by CSS, and a
 // blanket invert() wrecked logos that were designed dark. Instead: flood-fill
-// the near-white border region out to transparent, then flip lightness only
-// when what remains would be invisible on a dark panel. Colours are preserved
-// because the flip is the standard invert(1) + hue-rotate(180deg) pair, applied
-// by the browser's own filter on a throwaway canvas.
-function whiteTile (img) {
+// the near-white border region out to transparent, then flip lightness only when
+// what remains is genuinely dark ink on an otherwise-white canvas. Colours are
+// preserved because the flip is the standard invert(1) + hue-rotate(180deg)
+// pair, applied by the browser's own filter on a throwaway canvas.
+//
+// mode: 'auto' (decide), 'key' (never flip), 'keyflip' (always flip).
+function whiteTile (img, mode) {
   var w = img.naturalWidth
   var h = img.naturalHeight
   if (!w || !h || w * h > 4000000) return false
@@ -1206,8 +1214,6 @@ function whiteTile (img) {
   for (var x = 0; x < w; x++) { stack.push(x, (h - 1) * w + x) }
   for (var y = 0; y < h; y++) { stack.push(y * w, y * w + w - 1) }
   var removed = 0
-  var opaque = 0
-  var lumaSum = 0
   while (stack.length > 0) {
     var p = stack.pop()
     if (p < 0 || p >= w * h || seen[p] === 1) continue
@@ -1223,22 +1229,40 @@ function whiteTile (img) {
     if (cy > 0) stack.push(p - w)
     if (cy < h - 1) stack.push(p + w)
   }
-  // A real white-backed tile loses most of its border; anything less is a photo
-  // or a designed banner, and is left alone.
+  // A real white-backed tile loses a large part of itself to the fill; anything
+  // less is a photo or a designed banner and is left alone.
   if (removed < w * h * 0.2) return false
 
+  var opaque = 0
+  var dark = 0
+  var ring = 0
+  var ringOpaque = 0
   for (var k = 0; k < w * h; k++) {
     var i2 = k * 4
+    var kx = k % w
+    var ky = (k - kx) / w
+    var onRing = kx === 0 || ky === 0 || kx === w - 1 || ky === h - 1
+    if (onRing) ring++
     if (px[i2 + 3] < 40) continue
     opaque++
-    lumaSum += 0.2126 * px[i2] + 0.7152 * px[i2 + 1] + 0.0722 * px[i2 + 2]
+    if (onRing) ringOpaque++
+    if (0.2126 * px[i2] + 0.7152 * px[i2 + 1] + 0.0722 * px[i2 + 2] < 110) dark++
   }
   if (opaque === 0) return false
-  var darkContent = lumaSum / opaque < 140
+
+  var flip
+  if (mode === 'keyflip') flip = true
+  else if (mode === 'key') flip = false
+  else {
+    // Mostly dark ink that no longer touches the edges: it was drawn for a light
+    // page and would vanish here. Artwork that still runs edge to edge is a
+    // designed panel, so its colours are kept as sent.
+    flip = (dark / opaque) > 0.5 && (ringOpaque / Math.max(1, ring)) < 0.1
+  }
 
   ctx.putImageData(frame, 0, 0)
   var out = canvas
-  if (darkContent) {
+  if (flip) {
     out = document.createElement('canvas')
     out.width = w
     out.height = h
@@ -1252,9 +1276,30 @@ function whiteTile (img) {
   } catch (error) { return false }
 }
 
+// Per-image override, keyed by the address the mail carried so it survives a
+// re-render. Clicking a picture in the reader cycles it.
+var IMAGE_MODES = ['auto', 'key', 'keyflip', 'keep']
+var IMAGE_MODE_LABELS = { auto: '自动', key: '只去白底', keyflip: '去白底+翻色', keep: '原样' }
+
+function imageKeyOf (src) {
+  var text = String(src || '')
+  var hash = 2166136261
+  for (var i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = (hash * 16777619) >>> 0
+  }
+  return hash.toString(16)
+}
+
+function loadImageModes () {
+  try { return JSON.parse(localStorage.getItem('dsh-tb-imgmode') || '{}') || {} } catch (error) { return {} }
+}
+function saveImageModes (map) {
+  try { localStorage.setItem('dsh-tb-imgmode', JSON.stringify(map)) } catch (error) { /* no storage */ }
+}
+
 function scanMailImages (root) {
   if (state.invertMailImages === false) return
-  if (!document.documentElement.classList.contains('tb-dark')) return
   var images = root.querySelectorAll('img')
   for (var i = 0; i < images.length; i++) classifyMailImage(images[i])
 }
@@ -1262,14 +1307,42 @@ function scanMailImages (root) {
 function classifyMailImage (img) {
   if (img.dataset.tbScanned === '1') return
   img.dataset.tbScanned = '1'
+  var original = img.getAttribute('src') || ''
+  if (!original || original.indexOf('data:') === 0 || /^https?:/i.test(original) ||
+      original.indexOf('/api/thunderbird/image') === 0) {
+    // Inline/cid images and proxied remote ones are the ones we can sample.
+  } else {
+    return
+  }
+  var key = imageKeyOf(original)
+  img.dataset.tbKey = key
+  img.title = '点击切换图片处理方式（' + (IMAGE_MODE_LABELS[loadImageModes()[key] || 'auto']) + '）'
+  img.style.cursor = 'pointer'
+
   var run = function () {
+    var modes = loadImageModes()
+    var mode = modes[key] || 'auto'
+    if (mode === 'keep') return
+    if (mode === 'auto' && !document.documentElement.classList.contains('tb-dark')) return
     try {
-      if (!document.documentElement.classList.contains('tb-dark')) return
-      if (whiteTile(img)) img.classList.add('tb-invert-white')
+      if (whiteTile(img, mode)) img.classList.add('tb-invert-white')
     } catch (error) { /* a tainted canvas or a broken image: leave it as sent */ }
   }
   if (img.complete) run()
   else img.addEventListener('load', run, { once: true })
+}
+
+function cycleImageMode (img) {
+  var key = img.dataset.tbKey
+  if (!key) return
+  var modes = loadImageModes()
+  var current = modes[key] || 'auto'
+  var next = IMAGE_MODES[(IMAGE_MODES.indexOf(current) + 1) % IMAGE_MODES.length]
+  if (next === 'auto') delete modes[key]
+  else modes[key] = next
+  saveImageModes(modes)
+  setNotice('这张图：' + IMAGE_MODE_LABELS[next] + (next === 'auto' ? '（跟随自动判断）' : ''))
+  renderReader()
 }
 
 function button (label, handler) {
@@ -1841,12 +1914,71 @@ function readToken (win, hosts, name) {
   return ''
 }
 
+// A computed custom property is a token stream, not a number: the shell declares
+//   --dsh-titlebar-safe-inset-right: calc(var(--dsh-desktop-windows-caption-width, 140px) + 44px)
+// so parseFloat() yields NaN. Do NOT evaluate it with a throwaway element: the
+// client half observes this document, so inserting a node re-triggers its mount
+// pass, which measures again — a mutation loop that pins the window. Use the
+// Window Controls Overlay API instead, which is the same source the shell's own
+// calc() reads.
+function captionClusterWidth (win) {
+  var overlay = win.navigator && win.navigator.windowControlsOverlay
+  if (overlay && typeof overlay.getTitlebarAreaRect === 'function') {
+    try {
+      var rect = overlay.getTitlebarAreaRect()
+      var width = win.innerWidth - rect.x - rect.width
+      if (isFinite(width) && width > 0) return width
+    } catch (error) { /* overlay not enabled */ }
+  }
+  return NaN
+}
+
+// The shell's clearance survives var() substitution but keeps its calc(), e.g.
+// "calc(140px + 44px)". Evaluate only that simple shape — sums of px/vw/vh — and
+// return NaN for anything richer, rather than guessing.
+function calcPx (win, text) {
+  var src = String(text || '').trim()
+  if (!src) return NaN
+  var body = src.replace(/^calc\(/i, '').replace(/\)$/, '').trim()
+  if (/var\(|env\(/i.test(body)) return NaN
+  var total = 0
+  var seen = false
+  var re = /([+-]?)\s*([\d.]+)(px|vw|vh)?/g
+  var match
+  while ((match = re.exec(body)) !== null) {
+    var n = parseFloat(match[2])
+    if (!isFinite(n)) return NaN
+    var unit = match[3] || 'px'
+    if (unit === 'vw') n = n * win.innerWidth / 100
+    else if (unit === 'vh') n = n * win.innerHeight / 100
+    total += (match[1] === '-' ? -1 : 1) * n
+    seen = true
+  }
+  if (!seen) return NaN
+  if (/[a-z]/i.test(body.replace(/[\d.\s+\-]|px|vw|vh/gi, ''))) return NaN
+  return total
+}
+
+// The shell's clearance is the caption cluster plus 44px, slack that also covers
+// the extra control the desktop titlebar injects next to those buttons.
+function safeRightInset (win, doc, hosts) {
+  var declared = String(readToken(win, hosts, '--dsh-titlebar-safe-inset-right') || '').trim()
+  if (/^-?[\d.]+px$/i.test(declared)) return parseFloat(declared)
+  var fromCalc = calcPx(win, declared)
+  if (isFinite(fromCalc) && fromCalc > 0) return fromCalc
+  var cluster = captionClusterWidth(win)
+  if (isFinite(cluster) && cluster > 0) return cluster + 44
+  var declaredCluster = calcPx(win, readToken(win, hosts, '--dsh-desktop-windows-caption-width'))
+  if (isFinite(declaredCluster) && declaredCluster > 0) return declaredCluster + 44
+  return NaN
+}
+
 // The window's caption buttons are drawn by the shell, not by this frame's
 // layout, so their width has to be reserved by hand. Prefer the declared token;
 // otherwise measure the control cluster pinned to the window's top-right corner
 // and reserve only the part that actually overlaps the panel.
 function captionInset (doc, win, hosts) {
-  var declared = parseFloat(readToken(win, hosts, '--dsh-titlebar-safe-inset-right'))
+  var declared = safeRightInset(win, doc, hosts)
   if (isFinite(declared) && declared > 0) return declared
 
   var frame = win.frameElement
@@ -1901,7 +2033,8 @@ function mirrorTheme () {
     // When the client half carves the strip out of the window drag region it
     // appends ?shielded=1, and the panel may then use the full height.
     var shielded = String(location.search || '').indexOf('shielded=1') >= 0
-    document.documentElement.style.setProperty('--tb-inset-top', shielded ? '0px' : (inset || '0px'))
+    var insetTop = parseFloat(inset)
+    document.documentElement.style.setProperty('--tb-inset-top', shielded ? '0px' : (isFinite(insetTop) && insetTop > 0 ? insetTop + 'px' : (inset || '0px')))
     document.documentElement.style.setProperty('--tb-inset-right', captionInset(doc, win, hosts) + 'px')
 
     // Every colour the panel paints comes from DSH's own theme tokens, so the
@@ -2796,7 +2929,7 @@ $('f-imgfit').onclick = function () {
 }
 syncImgFit()
 $('f-keys').onclick = function () {
-  setNotice('j / k 上下封邮件 · r 回复 · s 星标 · u 已读 · S 总结 · / 搜索 · g 聚合开关 · Esc 关掉打开的面板')
+  setNotice('j / k 上下封邮件 · r 回复 · s 星标 · u 已读 · S 总结 · / 搜索 · g 聚合开关 · Esc 关掉打开的面板 · 点邮件里的图片切换它的暗色处理方式')
 }
 $('btn-compose').onclick = function () { startCompose(null) }
 $('btn-cancel').onclick = function () { $('compose').hidden = true }

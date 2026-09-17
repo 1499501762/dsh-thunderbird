@@ -293,11 +293,20 @@ node .\dev\mock-thunderbird.js http://127.0.0.1:43129
 - **DSH 暗色主题的 `brand-primary` 是近白色**（`#f9fafb`），直接当强调色会让「实心主按钮」
   变成白底白字。现在按亮度推出 `--tb-accent-fg`，hover/active 也直接用 DSH 自己的
   `--dsw-alias-interactive-bg-hover/active`。
-- **右上角避让**：优先 `--dsh-titlebar-safe-inset-right`；没有就量窗口右上角的控件簇
-  （只扫 `button` / `[role=button]`，且只 reserve 真正压在面板上的那一截）；桌面壳里按钮
-  可能是原生画的、DOM 里量不到，那就只在确实贴到窗口右缘时按 Windows 布局预留 138px。
-  面板自己的 `.bar` 必须用 **padding 长写**，否则一行 `padding: 8px 12px` 会把避让值抹掉
-  —— 这个坑真踩了，表现就是「避让没生效」。
+- **右上角避让**：`--dsh-titlebar-safe-inset-right` 在桌面版里不是像素值，而是
+  `calc(var(--dsh-desktop-windows-caption-width, 140px) + 44px)` —— 自定义属性的计算值
+  是**未求值的 token 流**，`parseFloat()` 直接得到 NaN，避让就静默消失了。现在按
+  纯 px → 自己解 `calc()` 的 px/vw/vh 和 → **Window Controls Overlay API**
+  （`navigator.windowControlsOverlay.getTitlebarAreaRect()`，和壳里那个 calc 同源）
+  → `caption-width + 44`（这 44px 就是给桌面版额外注入的那个按钮留的）→ DOM 控件簇
+  → Windows 兜底 184px 的顺序取。
+  ⚠️ **千万不要用"临时插一个 div 量宽度"的办法求值**：client 半区正观察着同一棵树，
+  插节点会再次触发它的挂载回调，于是又去测量 —— 自我维持的 mutation 死循环，把窗口卡死。
+  面板自己的 `.bar` 还必须用 **padding 长写**，否则一行 `padding: 8px 12px` 会把避让值抹掉。
+- **图片处理可以逐张改**：自动规则只在「内容确实很暗（深色像素 > 50%）**且**已经不贴边
+  （说明是白纸上的墨迹而不是整块设计底板）」时才翻明度，其它情况只去白底、保留原色。
+  点邮件里的任意图片循环 自动 → 只去白底 → 去白底+翻色 → 原样，选择按图片地址的哈希
+  记在 localStorage，重渲染后仍然生效。
 
 ## 面板顶部与 DSH 桌面版标题栏
 

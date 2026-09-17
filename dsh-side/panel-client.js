@@ -220,10 +220,72 @@ window.__ModuleLoader__.load({
       return isFinite(px) && px > 0 ? px : 36
     }
 
+    // A computed custom property is a token stream, not a number: the shell
+    // declares the clearance as calc(var(--dsh-desktop-windows-caption-width,
+    // 140px) + 44px). Do NOT evaluate it with a throwaway element — this half
+    // observes the very tree it would mutate, so the probe re-triggers the mount
+    // pass that measures again, forever. The Window Controls Overlay API is the
+    // same source the shell's calc() reads, and it is side-effect free.
+    function captionClusterWidth () {
+      var overlay = navigator.windowControlsOverlay
+      if (overlay && typeof overlay.getTitlebarAreaRect === 'function') {
+        try {
+          var rect = overlay.getTitlebarAreaRect()
+          var width = window.innerWidth - rect.x - rect.width
+          if (isFinite(width) && width > 0) return width
+        } catch (error) { /* overlay not enabled */ }
+      }
+      return NaN
+    }
+
+    // The shell's clearance survives var() substitution but keeps its calc(),
+    // e.g. "calc(140px + 44px)". Evaluate only that simple shape — sums of
+    // px/vw/vh — and return NaN for anything richer rather than guessing.
+    function calcPx (text) {
+      var src = String(text || '').trim()
+      if (!src) return NaN
+      var body = src.replace(/^calc\(/i, '').replace(/\)$/, '').trim()
+      if (/var\(|env\(/i.test(body)) return NaN
+      var total = 0
+      var seen = false
+      var re = /([+-]?)\s*([\d.]+)(px|vw|vh)?/g
+      var match
+      while ((match = re.exec(body)) !== null) {
+        var n = parseFloat(match[2])
+        if (!isFinite(n)) return NaN
+        var unit = match[3] || 'px'
+        if (unit === 'vw') n = n * window.innerWidth / 100
+        else if (unit === 'vh') n = n * window.innerHeight / 100
+        total += (match[1] === '-' ? -1 : 1) * n
+        seen = true
+      }
+      if (!seen) return NaN
+      if (/[a-z]/i.test(body.replace(/[\d.\s+\-]|px|vw|vh/gi, ''))) return NaN
+      return total
+    }
+
+    function safeRightInset () {
+      var rootStyle = getComputedStyle(document.documentElement)
+      var bodyStyle = document.body ? getComputedStyle(document.body) : rootStyle
+      var declared = (rootStyle.getPropertyValue('--dsh-titlebar-safe-inset-right') ||
+        bodyStyle.getPropertyValue('--dsh-titlebar-safe-inset-right')).trim()
+      if (/^-?[\d.]+px$/i.test(declared)) return parseFloat(declared)
+      var fromCalc = calcPx(declared)
+      if (isFinite(fromCalc) && fromCalc > 0) return fromCalc
+      var cluster = captionClusterWidth()
+      // +44px is the shell's own slack, which also covers the extra control the
+      // desktop titlebar injects beside the caption buttons.
+      if (isFinite(cluster) && cluster > 0) return cluster + 44
+      var declaredCluster = calcPx(rootStyle.getPropertyValue('--dsh-desktop-windows-caption-width') ||
+        bodyStyle.getPropertyValue('--dsh-desktop-windows-caption-width'))
+      if (isFinite(declaredCluster) && declaredCluster > 0) return declaredCluster + 44
+      return NaN
+    }
+
     // The window's caption buttons are not part of this document's layout, so
     // the bar has to reserve their width or the refresh control lands under them.
     function captionInset () {
-      var declared = parseFloat(getComputedStyle(document.body).getPropertyValue('--dsh-titlebar-safe-inset-right'))
+      var declared = safeRightInset()
       if (isFinite(declared) && declared > 0) return declared
       var panelRight = window.innerWidth
       if (frameEl !== null) {
