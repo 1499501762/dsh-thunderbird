@@ -1,17 +1,22 @@
 /**
  * dsh-thunderbird — client half.
  *
- * Behaves like the other sidebar views in this profile (the tududi Kanban /
- * Calendar rows): a normal entry button in the left sidebar, and a view panel
- * mounted into the centre column that hides the conversation while it is open.
- * Plain DOM only, so the shell's React reconciliation is never disturbed.
+ * An entry button in the left sidebar, and a view panel that covers the centre
+ * column. Plain DOM only, so the shell's React reconciliation is never disturbed.
  *
  * Protocol copied from dsh-tududi-views (the working reference on this build):
  *   - entry: <button data-dsh-thunderbird-entry> beside the sibling entries
- *   - view:  [data-dsh-thunderbird-view] appended to [data-pane='conversation']
- *            or [class*='centerCol'], shown by html[data-dsh-thunderbird-active]
+ *   - view:  [data-dsh-thunderbird-view], a FIXED overlay on <body> positioned
+ *            from the centre column's live rect, shown by
+ *            html[data-dsh-thunderbird-active]
  *   - mutual exclusion via the `dsh-panel-activate` document event plus sibling
  *     active attributes, so only one panel is ever visible.
+ *
+ * ⚠️ The view is deliberately NOT a child of the centre column, and this sheet no
+ * longer overrides anything on DSH's own containers. It used to do both — plus
+ * hide every other child of the column with `display: none !important` — and the
+ * result was a panel that escaped its block whenever DSH re-rendered. Reading the
+ * column's rect is the only thing this half touches it for.
  *
  * The view body is a same-origin iframe onto /api/thunderbird/ui, which the
  * host half of this package serves.
@@ -39,12 +44,22 @@ window.__ModuleLoader__.load({
     var SIBLING_ROWS = '[data-dsh-tududi-entry], [data-dsh-taskboard-entry], [data-dsh-ssh-entry], [data-dsh-skill-explorer-entry]'
 
     var CSS = [
-      "[data-pane='conversation'], [class*='centerCol'] { position: relative; }",
-      '[' + VIEW_ATTR + '] { position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: none; flex-direction: column; z-index: 60; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1f2430); font-size: 13px; line-height: 1.5; -webkit-app-region: no-drag; }',
+      // NOTHING here touches DSH's own containers any more.
+      //
+      // This sheet used to force `position: relative` on the centre column and
+      // `display: none !important` on every child of it that was not ours, while
+      // our view lived INSIDE that column as a foreign child. Three mutations of a
+      // React-owned element at once, and the failure mode was exactly the report:
+      // a re-render moved the panel out of its block, because we had changed what
+      // its absolute children resolve against and had hidden the siblings its own
+      // layout was computed from.
+      //
+      // The view is a fixed overlay on <body> now, positioned from the column's
+      // live rect (same technique as the drag shield below, which has always been
+      // body-level and has never misbehaved). DSH's element is only ever READ.
+      '[' + VIEW_ATTR + '] { position: fixed; display: none; flex-direction: column; z-index: 60; overflow: hidden; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1f2430); font-size: 13px; line-height: 1.5; -webkit-app-region: no-drag; contain: layout paint; }',
       '[' + VIEW_ATTR + '] * { box-sizing: border-box; }',
       'html[' + ACTIVE_ATTR + ']:not([data-dsh-tududi-active]):not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [' + VIEW_ATTR + '] { display: flex; }',
-      'html[' + ACTIVE_ATTR + ']:not([data-dsh-tududi-active]):not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [data-pane=\'conversation\'] > :not([' + VIEW_ATTR + ']),',
-      'html[' + ACTIVE_ATTR + ']:not([data-dsh-tududi-active]):not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [class*=\'centerCol\'] > :not([' + VIEW_ATTR + ']) { display: none !important; }',
       '[' + ENTRY_ATTR + '] { box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 10px; background: transparent; border: none; border-radius: 8px; color: var(--dsw-alias-label-secondary, #6b7280); cursor: pointer; font-size: 13px; white-space: nowrap; transition: background .12s, color .12s; }',
       '[' + ENTRY_ATTR + ']:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(0,0,0,.05)); color: var(--dsw-alias-label-primary, #111); }',
       '[' + ENTRY_ATTR + '][data-active] { background: var(--dsw-alias-interactive-bg-active, rgba(0,0,0,.08)); color: var(--dsw-alias-label-primary, #111); font-weight: 600; }',
@@ -74,7 +89,6 @@ window.__ModuleLoader__.load({
     var frameEl = null
     var stateEl = null
     var shieldEl = null
-    var barEl = null
     var observer = null
     var open = false
     var probeTimer = null
@@ -300,91 +314,38 @@ window.__ModuleLoader__.load({
     // 140px) + 44px). Do NOT evaluate it with a throwaway element — this half
     // observes the very tree it would mutate, so the probe re-triggers the mount
     // pass that measures again, forever. The Window Controls Overlay API is the
-    // same source the shell's calc() reads, and it is side-effect free.
-    function captionClusterWidth () {
-      var overlay = navigator.windowControlsOverlay
-      if (overlay && typeof overlay.getTitlebarAreaRect === 'function') {
-        try {
-          var rect = overlay.getTitlebarAreaRect()
-          var width = window.innerWidth - rect.x - rect.width
-          if (isFinite(width) && width > 0) return width
-        } catch (error) { /* overlay not enabled */ }
-      }
-      return NaN
-    }
+    // The window-caption clearance cluster used to live here (captionClusterWidth
+    // / calcPx / safeRightInset / captionInset). Its last consumer was a bar padding
+    // that is gone: the panel is a fixed overlay on <body> now, below the title row,
+    // so the caption buttons are never beside anything it draws. It also measured
+    // 1300px in the live GUI. See README.
 
-    // The shell's clearance survives var() substitution but keeps its calc(),
-    // e.g. "calc(140px + 44px)". Evaluate only that simple shape — sums of
-    // px/vw/vh — and return NaN for anything richer rather than guessing.
-    function calcPx (text) {
-      var src = String(text || '').trim()
-      if (!src) return NaN
-      var body = src.replace(/^calc\(/i, '').replace(/\)$/, '').trim()
-      if (/var\(|env\(/i.test(body)) return NaN
-      var total = 0
-      var seen = false
-      var re = /([+-]?)\s*([\d.]+)(px|vw|vh)?/g
-      var match
-      while ((match = re.exec(body)) !== null) {
-        var n = parseFloat(match[2])
-        if (!isFinite(n)) return NaN
-        var unit = match[3] || 'px'
-        if (unit === 'vw') n = n * window.innerWidth / 100
-        else if (unit === 'vh') n = n * window.innerHeight / 100
-        total += (match[1] === '-' ? -1 : 1) * n
-        seen = true
+    // Position the panel over the centre column WITHOUT being its child.
+    //
+    // Reading the column's rect is the only thing this half is allowed to do to
+    // it. A rAF-coalesced tracker keeps the overlay aligned while the column
+    // resizes or scrolls; `contain: layout paint` on the overlay additionally
+    // guarantees our own contents can never affect the page's layout.
+    var trackScheduled = false
+    function trackOverlay () {
+      if (trackScheduled) return
+      trackScheduled = true
+      var run = function () {
+        trackScheduled = false
+        if (!open || viewEl === null || !viewEl.isConnected) return
+        var column = centerColumn()
+        if (column === null) return
+        var rect = column.getBoundingClientRect()
+        // A collapsed or hidden column reports 0×0; keeping the last good box is
+        // better than snapping the panel to nothing.
+        if (rect.width < 2 || rect.height < 2) return
+        viewEl.style.left = Math.round(rect.left) + 'px'
+        viewEl.style.top = Math.round(rect.top) + 'px'
+        viewEl.style.width = Math.round(rect.width) + 'px'
+        viewEl.style.height = Math.round(rect.height) + 'px'
       }
-      if (!seen) return NaN
-      if (/[a-z]/i.test(body.replace(/[\d.\s+\-]|px|vw|vh/gi, ''))) return NaN
-      return total
-    }
-
-    function safeRightInset () {
-      var rootStyle = getComputedStyle(document.documentElement)
-      var bodyStyle = document.body ? getComputedStyle(document.body) : rootStyle
-      var declared = (rootStyle.getPropertyValue('--dsh-titlebar-safe-inset-right') ||
-        bodyStyle.getPropertyValue('--dsh-titlebar-safe-inset-right')).trim()
-      if (/^-?[\d.]+px$/i.test(declared)) return parseFloat(declared)
-      var fromCalc = calcPx(declared)
-      if (isFinite(fromCalc) && fromCalc > 0) return fromCalc
-      var cluster = captionClusterWidth()
-      // +44px is the shell's own slack, which also covers the extra control the
-      // desktop titlebar injects beside the caption buttons.
-      if (isFinite(cluster) && cluster > 0) return cluster + 44
-      var declaredCluster = calcPx(rootStyle.getPropertyValue('--dsh-desktop-windows-caption-width') ||
-        bodyStyle.getPropertyValue('--dsh-desktop-windows-caption-width'))
-      if (isFinite(declaredCluster) && declaredCluster > 0) return declaredCluster + 44
-      return NaN
-    }
-
-    // The window's caption buttons are not part of this document's layout, so
-    // the bar has to reserve their width or the refresh control lands under them.
-    function captionInset () {
-      var declared = safeRightInset()
-      if (isFinite(declared) && declared > 0) return declared
-      var panelRight = window.innerWidth
-      if (frameEl !== null) {
-        try { panelRight = frameEl.getBoundingClientRect().right } catch (error) { /* detached */ }
-      }
-      var minLeft = panelRight
-      var nodes = document.querySelectorAll('button, [role="button"]')
-      for (var i = 0; i < nodes.length; i++) {
-        var node = nodes[i]
-        if (node.closest && node.closest(VIEW_SELECTOR) !== null) continue
-        var rect = node.getBoundingClientRect()
-        if (rect.width < 12 || rect.height === 0 || rect.height > 64) continue
-        if (rect.top > 12) continue
-        if (rect.right < panelRight - 6) continue
-        if (rect.left < minLeft) minLeft = rect.left
-      }
-      var inset = panelRight - minLeft
-      if (isFinite(inset) && inset >= 12) return Math.min(inset + 12, 200)
-      // In the desktop shell the caption buttons may be native, so the DOM has
-      // nothing to measure; reserve the Windows cluster when this bar really
-      // reaches the window edge. macOS keeps those buttons on the left.
-      var shell = document.querySelector('#dsh-desktop-windows-drag-region') !== null
-      if (shell && panelRight >= window.innerWidth - 8 && /Windows/i.test(String(navigator.userAgent || ''))) return 138
-      return 0
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
+      else run()
     }
 
     function syncShield () {
@@ -406,7 +367,7 @@ window.__ModuleLoader__.load({
       shieldEl.style.width = Math.round(rect.width) + 'px'
       shieldEl.style.top = '0px'
       shieldEl.style.height = stripHeight() + 'px'
-      if (barEl !== null) barEl.style.paddingRight = (12 + captionInset()) + 'px'
+      trackOverlay()
     }
 
     function ensureView () {
@@ -433,7 +394,6 @@ window.__ModuleLoader__.load({
         stateWrap,
         refresh,
       ])
-      barEl = bar
 
       // `shielded=1` tells the panel it may use the full height: the no-drag
       // shield below carves this strip out of the window drag region.
@@ -442,8 +402,9 @@ window.__ModuleLoader__.load({
 
       view.appendChild(bar)
       view.appendChild(frame)
-      column.appendChild(view)
+      document.body.appendChild(view)
       viewEl = view
+      trackOverlay()
       pollStatus()
       return view
     }
@@ -1195,6 +1156,10 @@ window.__ModuleLoader__.load({
       document.addEventListener('keydown', onDocumentKey, true)
       var onMessage = onWindowMessage(ctx)
       window.addEventListener('message', onMessage)
+      // Keep the body-level overlay aligned with the column it covers. Passive +
+      // capture: the column may scroll inside a scroller we do not own.
+      window.addEventListener('resize', trackOverlay)
+      document.addEventListener('scroll', trackOverlay, true)
       tryMount()
       try { watchSessionRemovals(ctx) } catch (error) { /* the rest of the panel still works */ }
       observer = new MutationObserver(function () { try { tryMount() } catch (error) { /* never break the shell */ } })
@@ -1207,6 +1172,8 @@ window.__ModuleLoader__.load({
             try { if (typeof sessionListUnsub === 'function') sessionListUnsub() } catch (error) { /* ignore */ }
             sessionListUnsub = null
             window.removeEventListener('message', onMessage)
+            window.removeEventListener('resize', trackOverlay)
+            document.removeEventListener('scroll', trackOverlay, true)
             document.removeEventListener('dsh-panel-activate', onPanelActivate)
             document.removeEventListener('click', onDocumentClick, true)
             document.removeEventListener('keydown', onDocumentKey, true)
@@ -1218,7 +1185,6 @@ window.__ModuleLoader__.load({
             viewEl = null
             frameEl = null
             stateEl = null
-            barEl = null
           }
         }, 'dsh-thunderbird: ui')
       }
