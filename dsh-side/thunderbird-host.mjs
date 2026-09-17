@@ -1123,6 +1123,165 @@ export function apply(ctx, config) {
     }
   }
 
+  // ------------------------------------------------------------- 邮件记忆库 (P1)
+  //
+  // Selected mail folders are written out as ONE Markdown file per mail, so that
+  // 灵枢's own `index_doc` can turn each file into a knowledge node whose doc_ref
+  // points back at it.
+  //
+  // Everything here was verified against the live memory plugin (0.4.8) before it
+  // was written:
+  //   - `index_doc` accepts a directory OUTSIDE the memory root (3/3 files indexed
+  //     from a probe dir, 0 errors), and records the absolute root in doc_ref, so
+  //     the export dir must be STABLE;
+  //   - it produces ONE node per top-level heading, so one mail per FILE is what
+  //     yields one mail per node;
+  //   - it does NOT dedupe by the content-prefix signature that `write` uses, so
+  //     two mails with identical openings both survive;
+  //   - it honours the sensitivity it is given (private, here), and marks the
+  //     nodes verification_basis=data — the difference between this and the
+  //     contextual layer, where 0 of 58 nodes have any verification basis.
+  //
+  // This half deliberately does NOT write into the memory plugin's own store:
+  // that would bypass its forgetting gate, dedup, review queue, conflict check,
+  // sensitivity handling and ingest watermarks. The plugin prepares files; 灵枢's
+  // own tools are what turn them into memory.
+  const KB_ROOT = join(STORE_DIR, 'mail-kb')
+  const KB_JOBS = new Map()
+  let kbJobSeq = 0
+
+  const kbDate = (ms) => {
+    const d = new Date(Number(ms) || Date.now())
+    const p = (n) => (n < 10 ? '0' : '') + n
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+  }
+
+  // One mail -> one file with exactly one level-1 heading, because that is the
+  // unit index_doc turns into a node. The sub-headings become that node's 子节.
+  const kbDocFor = (folder, header, bodyText) => {
+    const subject = String((header && header.subject) || '(无主题)')
+    const lines = [
+      '# ' + subject,
+      '',
+      '## 邮件信息',
+      '- 文件夹：' + String((folder && (folder.path || folder.name)) || folder || '-'),
+      '- 发件人：' + String((header && header.author) || '-'),
+      '- 收件人：' + (((header && header.recipients) || []).join(', ') || '-'),
+      '- 时间：' + new Date(Number((header && header.date) || Date.now())).toISOString(),
+      '- messageId：' + String((header && header.id) || '-'),
+      '',
+      '## 正文',
+      '',
+      String(bodyText || '(没有可读正文)').trim(),
+      '',
+    ]
+    return lines.join('\n')
+  }
+
+  async function kbRun (job, folders, limit) {
+    try {
+      await mkdir(KB_ROOT, { recursive: true })
+      const index = ['# 邮件记忆库', '', '导出目录：`' + KB_ROOT + '`', '']
+      job.state = 'running'
+      for (let f = 0; f < folders.length; f++) {
+        if (job.cancel) break
+        const folder = folders[f]
+        job.folder = String((folder && (folder.name || folder.path)) || folder.id)
+        const list = await bridge('messages.list', { folderId: folder.id, limit: limit }, 180000)
+        const messages = (list && list.messages) || []
+        const dir = join(KB_ROOT, slugify(String(folder.accountId || 'acc')) + '__' + slugify(folder.name || folder.path, 32))
+        await mkdir(dir, { recursive: true })
+        let wrote = 0
+        for (let i = 0; i < messages.length; i++) {
+          if (job.cancel) break
+          const header = messages[i]
+          job.done += 1
+          job.current = String(header.subject || header.id || '')
+          let text = ''
+          try {
+            const body = await bridge('messages.body', { messageId: header.id, preferHtml: false }, 180000)
+            text = (body && body.text) || ''
+          } catch (error) {
+            job.errors.push({ id: header.id, error: err(error) })
+            continue
+          }
+          // The id is in the name on purpose: two mails can share a date and a
+          // subject, and one file per mail is the whole point.
+          const name = kbDate(header.date) + '-' + slugify(header.subject, 40) + '-' + String(header.id) + '.md'
+          await writeFile(join(dir, name), kbDocFor(folder, header, text), 'utf8')
+          wrote += 1
+          job.files += 1
+        }
+        index.push('## ' + String(folder.name || folder.path) + '（' + wrote + ' 封）', '')
+        index.push('目录：`' + dir + '`', '')
+        job.folders.push({ id: folder.id, name: folder.name || folder.path, messages: wrote, dir: dir })
+      }
+      index.push('## 下一步', '', '在 DSH 会话里对这个目录运行 `lingshu_cg(op="index_doc", path=…)`，', '即可把每封邮件变成一条 knowledge 节点，正文用 `op=ref` 回读。', '')
+      await writeFile(join(KB_ROOT, 'INDEX.md'), index.join('\n'), 'utf8')
+      await writeFile(join(KB_ROOT, 'state.json'), JSON.stringify({
+        root: KB_ROOT,
+        exportedAt: Date.now(),
+        folders: job.folders,
+      }, null, 2), 'utf8')
+      job.state = job.cancel ? 'cancelled' : 'done'
+    } catch (error) {
+      job.state = 'error'
+      job.errors.push({ error: err(error) })
+    }
+    job.finishedAt = Date.now()
+  }
+
+  const kbExportHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    const folders = Array.isArray(input && input.folders) ? input.folders : []
+    if (!folders.length) { sendJson(res, 400, { ok: false, error: 'expected {folders: [{id, name, accountId}]}' }); return }
+    const limit = Math.max(1, Math.min(Number((input && input.limit)) || 50, 500))
+    const job = {
+      id: 'kb' + (++kbJobSeq) + '-' + Date.now().toString(36),
+      state: 'starting', startedAt: Date.now(), finishedAt: 0,
+      folder: '', current: '', done: 0, files: 0, folders: [], errors: [], cancel: false,
+      total: folders.length,
+      root: KB_ROOT,
+    }
+    KB_JOBS.set(job.id, job)
+    // Fire and forget: the panel polls kb/status. A folder can hold thousands of
+    // mails and one body fetch is one round trip to the extension.
+    kbRun(job, folders, limit)
+    sendJson(res, 200, { ok: true, job: job.id, root: KB_ROOT, limit: limit })
+  }
+
+  const kbStatusHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    const id = String(param(req.url, 'job') || '')
+    // `param` returns NULL when the key is absent, and `null !== undefined` is
+    // true — so `!== undefined` here cancelled every job on the first status poll
+    // instead of reporting it, and the export stopped after one mail.
+    if (param(req.url, 'cancel') !== null) {
+      const job = KB_JOBS.get(id)
+      if (job) job.cancel = true
+      sendJson(res, 200, { ok: true, cancelled: !!job })
+      return
+    }
+    if (id) {
+      const job = KB_JOBS.get(id)
+      if (!job) { sendJson(res, 200, { ok: false, error: 'unknown job' }); return }
+      sendJson(res, 200, {
+        ok: true, id: job.id, state: job.state, root: job.root,
+        folder: job.folder, current: job.current,
+        done: job.done, files: job.files, folders: job.folders,
+        errorCount: job.errors.length, errors: job.errors.slice(0, 5),
+      })
+      return
+    }
+    // No id: report the last export and the directory, so the panel can show
+    // what is already there after a restart (jobs do not survive one).
+    let state = null
+    try { state = JSON.parse(await readFile(join(KB_ROOT, 'state.json'), 'utf8')) } catch (error) { state = null }
+    sendJson(res, 200, { ok: true, root: KB_ROOT, state: state, jobs: KB_JOBS.size })
+  }
+
   // ---- mount ---------------------------------------------------------------
 
   const routes = [
@@ -1142,6 +1301,8 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/log', sessionLogHandler],
     ['/api/thunderbird/session/remove', sessionRemoveHandler],
     ['/api/thunderbird/session/detach', sessionDetachHandler],
+    ['/api/thunderbird/kb/export', kbExportHandler],
+    ['/api/thunderbird/kb/status', kbStatusHandler],
     ['/api/thunderbird/session/file', sessionFileHandler],
     ['/api/thunderbird/session/transcript', transcriptHandler],
     ['/api/thunderbird/image', imageProxyHandler],

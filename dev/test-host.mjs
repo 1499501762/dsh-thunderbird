@@ -255,6 +255,48 @@ const messageTool = registeredTools.get('thunderbird_message')
 const messageValue = await messageTool.execute({ messageId: Number(sameThread[0]) }, {})
 check('thunderbird_message returns headers and body', typeof messageValue === 'string' && messageValue.includes('Subject:'))
 
+// ---- 邮件记忆库导出 (P1) ---------------------------------------------------
+// This runs against a FRESH mount of the host half, which is the only way to test
+// a host change without restarting the running DSH (its module is cached by URL).
+const started = await post('/api/thunderbird/kb/export', {
+  folders: [{ id: folderId, name: '收件箱', accountId: 'account1' }],
+  limit: 5,
+})
+check('kb/export starts a job', started && started.ok === true && typeof started.job === 'string', JSON.stringify(started).slice(0, 120))
+
+let job = null
+for (let i = 0; i < 60; i++) {
+  job = await get('/api/thunderbird/kb/status?job=' + encodeURIComponent(started.job))
+  if (job && (job.state === 'done' || job.state === 'error' || job.state === 'cancelled')) break
+  await wait(200)
+}
+check('kb job reaches done', job && job.state === 'done', job ? job.state + ' files=' + job.files : 'no job')
+check('kb job wrote files', job && job.files > 0, job ? String(job.files) : '-')
+
+const { readFile: readKb, readdir } = await import('node:fs/promises')
+const indexDoc = await readKb(join(started.root, 'INDEX.md'), 'utf8')
+check('kb INDEX.md is written', indexDoc.includes('# 邮件记忆库') && indexDoc.includes('index_doc'),
+  indexDoc.split('\n')[0])
+
+const dirs = await readdir(started.root)
+const mailDir = dirs.find((name) => name.startsWith('account1__'))
+check('kb writes one directory per folder', typeof mailDir === 'string', dirs.join(','))
+
+const files = mailDir ? await readdir(join(started.root, mailDir)) : []
+check('kb writes one markdown file per mail', files.length > 0 && files.every((f) => f.endsWith('.md')),
+  files.slice(0, 2).join(' | '))
+
+const firstDoc = files.length ? await readKb(join(started.root, mailDir, files[0]), 'utf8') : ''
+const h1Count = (firstDoc.match(/^# /gm) || []).length
+check('each mail file has exactly ONE level-1 heading', h1Count === 1,
+  h1Count + ' h1 in ' + (files[0] || '-'))
+// index_doc only takes level<=3 headings, and one top-level heading is what makes
+// exactly one knowledge node per mail. The sub-headings become that node's 子节.
+check('the mail doc carries 邮件信息 + 正文 sections',
+  firstDoc.includes('## 邮件信息') && firstDoc.includes('## 正文') && firstDoc.includes('- messageId：'))
+check('the file name is unique per message', files.some((f) => /-\d+\.md$/.test(f)),
+  files[0] || '-')
+
 mock.kill()
 server.close()
 await rm(home, { recursive: true, force: true })

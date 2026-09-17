@@ -860,6 +860,19 @@
     padding: 0 14px;
   }
 
+  /* ---------- 记忆库 ---------- */
+  .kb-cols { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 12px; color: var(--tb-text-dim); }
+  .kb-list { max-height: 46vh; overflow: auto; border: 1px solid var(--tb-glass-line); border-radius: var(--tb-r-md); padding: 6px; }
+  .kb-row { display: flex; align-items: center; gap: 7px; padding: 3px 6px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
+  .kb-row:hover { background: var(--tb-hover); }
+  .kb-row.on { background: color-mix(in srgb, var(--tb-accent) 12%, transparent); }
+  .kb-row .kb-acct { color: var(--tb-text-dim); font-size: 10.5px; margin-left: auto; flex: none; }
+  .kb-progress { margin-top: 10px; padding: 10px 12px; border-radius: var(--tb-r-md); border: 1px solid var(--tb-glass-line); background: var(--tb-glass-1); font-size: 12.5px; }
+  .kb-progress .kb-bar { height: 4px; border-radius: 999px; background: var(--tb-border); overflow: hidden; margin: 7px 0; }
+  .kb-progress .kb-bar i { display: block; height: 100%; background: var(--tb-accent); transition: width .2s; }
+  .kb-done { color: var(--tb-ok); }
+  .kb-fail { color: var(--tb-err); }
+
   /* When the block really did move to the right sidebar, what is left behind in
      the panel must stop being a floating window. It used to keep its fixed
      centring and its shadow and become a hollow box hanging over the mail, with
@@ -1095,6 +1108,7 @@
     <button class="btn" id="btn-rules" data-overflow="1">分类规则</button>
     <button class="btn" id="btn-sessions" data-overflow="1">会话</button>
     <button class="btn" id="btn-signatures" data-overflow="1">签名</button>
+    <button class="btn" id="btn-kb" data-overflow="1" title="把选中的邮件文件夹导出成 Markdown，交给灵枢建成知识库">记忆库</button>
     <button class="btn" id="btn-group" data-overflow="1" title="按主题聚合">聚合</button>
     <button class="btn" id="btn-more" hidden title="更多">⋯</button>
     <button class="btn primary" id="btn-compose">写邮件</button>
@@ -1245,6 +1259,27 @@
   </div>
 
   <div class="ctxmenu" id="ctxmenu" hidden></div>
+
+  <div class="ai" id="kbwin" hidden>
+    <div class="ai-head">
+      <span class="ai-title">记忆库</span>
+      <span class="ai-model" id="kb-root"></span>
+      <span class="grow"></span>
+      <button class="btn" id="kb-export">导出选中文件夹</button>
+      <button class="btn" id="kb-index" hidden>让 DSH 索引</button>
+      <button class="btn" id="kb-close">关闭</button>
+    </div>
+    <div class="ai-body">
+      <p class="meta" id="kb-note">选中的文件夹会被导出成 Markdown（一封一个文件），再由灵枢的 <span class="code">index_doc</span> 变成 knowledge 节点。导出不调用模型。</p>
+      <div class="kb-cols">
+        <label>每次最多取<input class="input" id="kb-limit" type="number" min="1" max="500" value="50" style="width:74px"></label>
+        <span class="grow"></span>
+        <button class="btn" id="kb-none">全不选</button>
+      </div>
+      <div class="kb-list" id="kb-list"></div>
+      <div class="kb-progress" id="kb-progress" hidden></div>
+    </div>
+  </div>
 
   <div class="selmenu" id="selmenu" hidden>
     <button data-act="ask">问 AI</button>
@@ -5658,6 +5693,163 @@ function reportTabOpen (info, label) {
   }
   setNotice(label + '已开在右侧栏')
 }
+
+// ------------------------------------------------------------------ 记忆库 (P1)
+// Export selected folders as one Markdown file per mail, then hand the directory
+// to 灵枢's own index_doc. The plugin never writes into the memory store itself:
+// that would bypass the forgetting gate, the review queue and the watermarks.
+// Measured against the live plugin (0.4.8): index_doc takes a directory outside
+// its root, makes one node per level-1 heading at the sensitivity it is given, and
+// does not collide on the content-prefix signature that `write` dedupes with.
+var kbState = { job: null, root: '', picked: {}, timer: null }
+
+function kbPickedFolders () {
+  var out = []
+  for (var i = 0; i < state.folders.length; i++) {
+    var f = state.folders[i]
+    if (kbState.picked[f.id]) out.push({ id: f.id, name: f.name || f.path, accountId: f.accountId })
+  }
+  return out
+}
+
+function renderKb () {
+  var list = $('kb-list')
+  if (!list) return
+  list.innerHTML = ''
+  var account = {}
+  for (var a = 0; a < (state.accounts || []).length; a++) account[state.accounts[a].id] = state.accounts[a].name
+  for (var i = 0; i < state.folders.length; i++) {
+    var folder = state.folders[i]
+    var row = document.createElement('label')
+    row.className = 'kb-row' + (kbState.picked[folder.id] ? ' on' : '')
+    var box = document.createElement('input')
+    box.type = 'checkbox'
+    box.checked = !!kbState.picked[folder.id]
+    box.onchange = (function (id) {
+      return function () {
+        kbState.picked[id] = this.checked
+        renderKb()
+      }
+    })(folder.id)
+    row.appendChild(box)
+    var name = document.createElement('span')
+    name.textContent = (folder.depth ? new Array(folder.depth + 1).join('　') : '') + folderLabel(folder)
+    row.appendChild(name)
+    var acct = document.createElement('span')
+    acct.className = 'kb-acct'
+    acct.textContent = account[folder.accountId] || folder.accountId || ''
+    row.appendChild(acct)
+    list.appendChild(row)
+  }
+  if (!state.folders.length) list.innerHTML = '<div class="meta" style="padding:8px">还没有文件夹，先刷新一次邮件。</div>'
+}
+
+function kbProgress (text, ratio, cls) {
+  var box = $('kb-progress')
+  if (!box) return
+  box.hidden = false
+  box.innerHTML = ''
+  var line = document.createElement('div')
+  if (cls) line.className = cls
+  line.textContent = text
+  box.appendChild(line)
+  if (ratio !== null && ratio !== undefined) {
+    var bar = document.createElement('div')
+    bar.className = 'kb-bar'
+    var fill = document.createElement('i')
+    fill.style.width = Math.max(0, Math.min(100, Math.round(ratio * 100))) + '%'
+    bar.appendChild(fill)
+    box.appendChild(bar)
+  }
+}
+
+function kbPoll () {
+  if (!kbState.job) return
+  fetch('/api/thunderbird/kb/status?job=' + encodeURIComponent(kbState.job), { cache: 'no-store' })
+    .then(function (res) { return res.json() })
+    .then(function (out) {
+      if (!out || out.ok !== true) { kbProgress('读取进度失败：' + ((out && out.error) || 'unknown'), null, 'kb-fail'); return }
+      if (out.state === 'done' || out.state === 'cancelled' || out.state === 'error') {
+        if (kbState.timer) { clearInterval(kbState.timer); kbState.timer = null }
+        kbState.root = out.root || kbState.root
+        if (out.state === 'error') {
+          kbProgress('导出失败（' + out.errorCount + ' 个错误）。第一个：' + JSON.stringify((out.errors || [])[0] || {}), null, 'kb-fail')
+          return
+        }
+        kbProgress((out.state === 'cancelled' ? '已停止：' : '完成：') + out.files + ' 封已写入 ' + out.root
+          + (out.errorCount ? '（' + out.errorCount + ' 个失败）' : ''), 1, 'kb-done')
+        $('kb-index').hidden = false
+        return
+      }
+      kbProgress('导出中 · ' + (out.folder || '') + ' · ' + (out.current || '') + ' · 已写 ' + out.files + ' 封',
+        out.done ? Math.min(0.98, out.files / Math.max(out.files + 20, out.done + 20)) : 0, null)
+    })
+    .catch(function (error) { kbProgress('轮询失败：' + String((error && error.message) || error), null, 'kb-fail') })
+}
+
+function openKb () {
+  $('kbwin').hidden = false
+  $('rules').hidden = true
+  $('sessions').hidden = true
+  $('signatures').hidden = true
+  renderKb()
+  fetch('/api/thunderbird/kb/status', { cache: 'no-store' }).then(function (r) { return r.json() }).then(function (out) {
+    if (out && out.root) {
+      kbState.root = out.root
+      $('kb-root').textContent = out.root
+    }
+    if (out && out.state && out.state.folders && out.state.folders.length) {
+      var total = out.state.folders.reduce(function (n, f) { return n + (f.messages || 0) }, 0)
+      $('kb-note').innerHTML = '上次导出：' + total + ' 封，' + out.state.folders.length + ' 个文件夹（'
+        + new Date(out.state.exportedAt).toLocaleString() + '）。再导出会覆盖同名文件。'
+    }
+  }).catch(function () { /* the root is shown when the export starts */ })
+}
+
+;(function () {
+  if (!$('btn-kb')) return
+  $('btn-kb').onclick = function () { if ($('kbwin').hidden) openKb(); else $('kbwin').hidden = true }
+  $('kb-close').onclick = function () { $('kbwin').hidden = true }
+  $('kb-none').onclick = function () { kbState.picked = {}; renderKb() }
+  $('kb-export').onclick = function () {
+    var folders = kbPickedFolders()
+    if (!folders.length) { setError('先选至少一个文件夹'); return }
+    var limit = Math.max(1, Math.min(500, Number($('kb-limit').value) || 50))
+    kbProgress('正在启动导出…', 0, null)
+    postJson('/api/thunderbird/kb/export', { folders: folders, limit: limit }).then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '启动失败')
+      kbState.job = out.job
+      kbState.root = out.root
+      $('kb-root').textContent = out.root
+      $('kb-index').hidden = true
+      kbProgress('导出中（每个文件夹最多 ' + out.limit + ' 封）…', 0, null)
+      if (kbState.timer) clearInterval(kbState.timer)
+      kbState.timer = setInterval(kbPoll, 1200)
+      kbPoll()
+    }).catch(function (error) { kbProgress('启动失败：' + String((error && error.message) || error), null, 'kb-fail') })
+  }
+  $('kb-index').onclick = function () {
+    if (!kbState.root) { setError('还没有导出目录'); return }
+    // The memory tools belong to the AGENT, so the only honest way to index is to
+    // ask a DSH session to run it. The prompt states the exact call.
+    var prompt = '请把邮件记忆库目录索引进灵枢，让每封邮件变成一条可检索的知识节点。\n\n'
+      + '目录：`' + kbState.root + '`\n\n'
+      + '执行：`lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="private")`\n\n'
+      + '完成后报告：索引了多少个文件、knowledge 层现在有多少节点。不要修改目录里的任何文件。'
+    dshCall('session/create', { dir: kbState.root, title: '邮件记忆库' }, 90000).then(function (bound) {
+      return dshCall('session/prompt', { sessionId: bound.sessionId, text: prompt, mode: 'queue' }, 60000)
+        .then(function () { return bound })
+    }).then(function (bound) {
+      return dshCall('session/open', { sessionId: bound.sessionId }, 20000)
+    }).then(function () {
+      setNotice('已开一个 DSH 会话去索引记忆库')
+      $('kbwin').hidden = true
+    }).catch(function (error) {
+      kbProgress('开会话失败：' + String((error && error.message) || error) + '（可以自己在 DSH 里对 ' + kbState.root + ' 跑 index_doc）', null, 'kb-fail')
+    })
+  }
+  renderKb()
+})()
 
 function renderSessions () {
   $('sess-count').textContent = state.sessions.list.length
