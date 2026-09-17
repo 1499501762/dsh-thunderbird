@@ -1267,6 +1267,8 @@
       <span class="grow"></span>
       <button class="btn" id="kb-export">导出选中文件夹</button>
       <button class="btn" id="kb-index" hidden>让 DSH 索引</button>
+      <button class="btn" id="kb-distill" hidden>蒸馏成记忆</button>
+      <button class="btn" id="kb-ingest" hidden>增量摄取</button>
       <button class="btn" id="kb-close">关闭</button>
     </div>
     <div class="ai-body">
@@ -5779,6 +5781,8 @@ function kbPoll () {
         kbProgress((out.state === 'cancelled' ? '已停止：' : '完成：') + out.files + ' 封已写入 ' + out.root
           + (out.errorCount ? '（' + out.errorCount + ' 个失败）' : ''), 1, 'kb-done')
         $('kb-index').hidden = false
+        $('kb-distill').hidden = false
+        $('kb-ingest').hidden = false
         return
       }
       kbProgress('导出中 · ' + (out.folder || '') + ' · ' + (out.current || '') + ' · 已写 ' + out.files + ' 封',
@@ -5802,8 +5806,31 @@ function openKb () {
       var total = out.state.folders.reduce(function (n, f) { return n + (f.messages || 0) }, 0)
       $('kb-note').innerHTML = '上次导出：' + total + ' 封，' + out.state.folders.length + ' 个文件夹（'
         + new Date(out.state.exportedAt).toLocaleString() + '）。再导出会覆盖同名文件。'
+      // The directory already has content, so the follow-up steps are available
+      // without re-exporting (jobs do not survive a DSH restart).
+      $('kb-index').hidden = false
+      $('kb-distill').hidden = false
+      $('kb-ingest').hidden = false
     }
   }).catch(function () { /* the root is shown when the export starts */ })
+}
+
+// Open (or reuse) a DSH session rooted at the memory-library directory and send it
+// the prompt. The memory tools belong to the AGENT — a plugin cannot call them —
+// so every step that touches 灵枢 goes through a session like this one.
+function kbSession (title, prompt, okMessage) {
+  dshCall('session/create', { dir: kbState.root, title: title }, 90000).then(function (bound) {
+    return dshCall('session/prompt', { sessionId: bound.sessionId, text: prompt, mode: 'queue' }, 60000)
+      .then(function () { return bound })
+  }).then(function (bound) {
+    return dshCall('session/open', { sessionId: bound.sessionId }, 20000)
+  }).then(function () {
+    setNotice(okMessage)
+    $('kbwin').hidden = true
+  }).catch(function (error) {
+    kbProgress('开会话失败：' + String((error && error.message) || error)
+      + '（也可以自己在 DSH 里对 ' + kbState.root + ' 执行）', null, 'kb-fail')
+  })
 }
 
 ;(function () {
@@ -5836,19 +5863,55 @@ function openKb () {
       + '目录：`' + kbState.root + '`\n\n'
       + '执行：`lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="private")`\n\n'
       + '完成后报告：索引了多少个文件、knowledge 层现在有多少节点。不要修改目录里的任何文件。'
-    dshCall('session/create', { dir: kbState.root, title: '邮件记忆库' }, 90000).then(function (bound) {
-      return dshCall('session/prompt', { sessionId: bound.sessionId, text: prompt, mode: 'queue' }, 60000)
-        .then(function () { return bound })
-    }).then(function (bound) {
-      return dshCall('session/open', { sessionId: bound.sessionId }, 20000)
-    }).then(function () {
-      setNotice('已开一个 DSH 会话去索引记忆库')
-      $('kbwin').hidden = true
-    }).catch(function (error) {
-      kbProgress('开会话失败：' + String((error && error.message) || error) + '（可以自己在 DSH 里对 ' + kbState.root + ' 跑 index_doc）', null, 'kb-fail')
-    })
+    kbSession('邮件记忆库', prompt, '已开一个 DSH 会话去索引记忆库')
   }
-  renderKb()
+  $('kb-distill').onclick = function () {
+    if (!kbState.root) { setError('还没有导出目录'); return }
+    // P2 + P3. Two deliberate choices, both taken from how the memory plugin is
+    // built rather than from what would be convenient:
+    //   - facts go to mdcg_propose (the hippocampus review queue, currently empty
+    //     and never used) instead of write, so a human decides what becomes
+    //     long-term memory;
+    //   - every proposal declares derived_from, which is what finally populates
+    //     _link.jsonl — the provenance ledger that does not exist yet.
+    // The budget cap is in the prompt because there is no cost control down here:
+    // one model call per mail over a real folder is how this feature would quietly
+    // become very expensive.
+    var prompt = [
+      '把 `' + kbState.root + '` 里的邮件蒸馏成记忆，交进灵枢。',
+      '',
+      '严格按下面的做法，不要自由发挥：',
+      '',
+      '1. 先 `lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="private")` 确保每封邮件都有节点。',
+      '2. 每封邮件写一篇蒸馏笔记到 `' + kbState.root + '/notes/<主题>.md`，只保留：',
+      '   - 实体（人、公司、单号、金额、日期）',
+      '   - 结论与承诺',
+      '   - 待办与未决问题',
+      '   不要复制正文，不要保留签名和邮件链。',
+      '3. 每条**值得长期记住**的事实调用 `mdcg_propose`（**不要用 write**，我要在审核队列里逐条过）。',
+      '   每条必须带 `derived_from` = 来源邮件节点的 id。用 `lingshu_cg(op="read", query="<主题>")`',
+      '   找到对应节点，它的 `ref.path` 就是那封邮件的 md 文件。',
+      '4. **预算上限：最多处理 20 封邮件**。到上限就停下，报告还剩多少封没处理。',
+      '5. 不要修改 `' + kbState.root + '` 里已导出的邮件文件。',
+      '',
+      '最后报告：处理了几封、propose 了几条、knowledge 层节点数、_link.jsonl 是否已生成。',
+    ].join('\n')
+    kbSession('邮件记忆蒸馏', prompt, '已开会话做蒸馏（上限 20 封）')
+  }
+  $('kb-ingest').onclick = function () {
+    if (!kbState.root) { setError('还没有导出目录'); return }
+    // P4. `ingest` keeps per-source watermarks, so a second run skips what it has
+    // already seen — that is the incremental path for new mail.
+    var prompt = [
+      '把邮件记忆库的增量摄取跑一遍。',
+      '',
+      '执行：`lingshu_cg(op="ingest", action="dir", path="' + kbState.root + '", incremental=true)`',
+      '',
+      '然后 `lingshu_cg(op="ingest", action="stat")` 报告水位，',
+      '并用 `mdcg_watermarks` 报告这次和上次的水位差异。不要修改目录里的文件。',
+    ].join('\n')
+    kbSession('邮件记忆增量', prompt, '已开会话跑增量摄取')
+  }
 })()
 
 function renderSessions () {
