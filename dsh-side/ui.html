@@ -1096,6 +1096,10 @@ state.pinned = loadPinned()
     + '.folder:hover .pin{opacity:.85}'
     + '.folder .pin:hover{opacity:1;color:var(--tb-accent)}'
     + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
+    // The star lands in the same slot as the expand caret, so the caret steps
+    // aside while the star is up. That is what stops the two colliding, and it
+    // costs no layout change — a reserved gutter would have moved every row.
+    + '.folder:hover .folder-caret{opacity:0}'
     + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent)}'
   document.head.appendChild(style)
 })()
@@ -1881,17 +1885,40 @@ function selectFolder (id) {
 
 var AUTO_LOAD_LIMIT = 1500000
 
+// Bodies are cached per message id. Without this every click re-asked Thunderbird
+// for the whole message, so even a mail it had already decoded locally cost a
+// round trip and looked like "it loads every single time".
+var BODY_CACHE = {}
+var BODY_CACHE_MAX = 16
+
+function cacheBody (messageId, content) {
+  BODY_CACHE[messageId] = content
+  var keys = Object.keys(BODY_CACHE)
+  while (keys.length > BODY_CACHE_MAX) {
+    delete BODY_CACHE[keys.shift()]
+  }
+}
+
 function openMessage (message) {
   state.current = message
-  state.body = null
   state.bodyError = ''
-  // Decoding pulls the whole message off the server; make the big ones opt-in.
-  state.bodyManual = !!(message.size && message.size > AUTO_LOAD_LIMIT)
   state.showHtml = false
   setNotice('')
-  render()
-  resetReaderScroll()
-  if (!state.bodyManual) loadBody(message.id)
+  var cached = BODY_CACHE[message.id]
+  if (cached) {
+    // Cached bodies are instant, so the size gate does not apply to them.
+    state.body = cached
+    state.bodyManual = false
+    render()
+    resetReaderScroll()
+  } else {
+    state.body = null
+    // Decoding pulls the whole message off the server; make the big ones opt-in.
+    state.bodyManual = !!(message.size && message.size > AUTO_LOAD_LIMIT)
+    render()
+    resetReaderScroll()
+    if (!state.bodyManual) loadBody(message.id)
+  }
   if (!message.read) {
     call('messages.update', { messageId: message.id, read: true }).then(function () {
       message.read = true
@@ -1927,6 +1954,7 @@ function loadBody (messageId) {
   // Decoding a large message over IMAP downloads it first, so allow real time.
   call('messages.body', { messageId: messageId }, 90000).then(function (content) {
     state.body = content
+    cacheBody(messageId, content)
     state.inlineImages = null
     // Word/VML business mail often carries a short plain-text stub plus a much
     // richer HTML body; show the HTML whenever it actually has more content.
@@ -3896,17 +3924,24 @@ function applySelectedSignature () {
   if (!option) return
   var text = String(option.text || '')
   var isHtml = option.html || /<[a-z][\s\S]*?>/i.test(text)
+  // A signature is set off the way a mail client does it: a blank line, a rule,
+  // a blank line, then the block. The same lead goes into the sent copy.
+  var lead = '<div><br></div><hr style="border:0;border-top:1px solid #9aa0a6;margin:10px 0"><div><br></div>'
   var wrap = document.createElement('div')
   wrap.setAttribute('data-dsh-sig', '1')
   wrap.style.cssText = 'margin-top:12px'
-  if (isHtml) wrap.innerHTML = sanitize(text)
-  else {
-    wrap.style.whiteSpace = 'pre-wrap'
-    wrap.textContent = text
+  if (isHtml) {
+    wrap.innerHTML = lead + sanitize(text)
+  } else {
+    wrap.innerHTML = lead
+    var plain = document.createElement('div')
+    plain.style.whiteSpace = 'pre-wrap'
+    plain.textContent = text
+    wrap.appendChild(plain)
   }
   rewriteLocalImages(wrap)
   editor.appendChild(wrap)
-  state.composeSigHtml = isHtml ? '<div style="margin-top:12px">' + sanitize(text) + '</div>' : ''
+  state.composeSigHtml = isHtml ? '<div style="margin-top:12px">' + lead + sanitize(text) + '</div>' : ''
 }
 
 // The composer is opened from several places, so wrap it once instead of editing
