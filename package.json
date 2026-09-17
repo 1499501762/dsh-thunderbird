@@ -1,0 +1,53 @@
+{
+  "name": "dsh-thunderbird",
+  "version": "1.0.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "author": "1499501762",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1499501762/dsh-thunderbird.git"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "thunderbird",
+    "mailextension",
+    "cordis",
+    "plugin",
+    "ai"
+  ],
+  "description": "DSH x Thunderbird: mail bridge (/api/thunderbird/*), mail-aware AI actions on ctx.llm, and a docked mail panel. Local plugin package installed with link:.",
+  "type": "module",
+  "main": "dsh-side/thunderbird-host.mjs",
+  "exports": {
+    ".": "./dsh-side/thunderbird-host.mjs",
+    "./client": "./dsh-side/panel-client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dsh-side",
+    "thunderbird-addon",
+    "dev",
+    "cordis.patch.yml",
+    "install-addon.ps1",
+    "persistent-install.ps1",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.1.5-rc.1"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    }
+  }
+}

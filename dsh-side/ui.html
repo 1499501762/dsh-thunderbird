@@ -1,0 +1,1946 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Thunderbird</title>
+<style>
+  :root {
+    --tb-bg: #ffffff;
+    --tb-bg-1: #f7f7f9;
+    --tb-bg-2: #ececf1;
+    --tb-border: #e3e3e8;
+    --tb-border-strong: #cfcfd6;
+    --tb-text: #1c1c1e;
+    --tb-text-dim: #6b6b74;
+    --tb-accent: #3b6ef6;
+    --tb-ok: #2e9e5b;
+    --tb-err: #d0453f;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --tb-bg: #17181b;
+      --tb-bg-1: #1e1f24;
+      --tb-bg-2: #26272e;
+      --tb-border: #2f3138;
+      --tb-border-strong: #3c3e47;
+      --tb-text: #e9e9ec;
+      --tb-text-dim: #9a9ba4;
+      --tb-accent: #7aa2ff;
+      --tb-ok: #4cc07b;
+      --tb-err: #ef6b64;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: var(--tb-text); background: var(--tb-bg); overflow: hidden;
+  }
+  .app { display: flex; flex-direction: column; height: 100%; background: var(--tb-bg-1); }
+  /* The titlebar strip is a drag region in the PARENT document: it swallows
+     pointer events for its full width, and an iframe cannot opt out with
+     no-drag. So the bar's surface is painted from y=0 (no visual gap) while its
+     controls start below the strip. The strip's own height is auto-detected. */
+  .bar { padding-top: var(--tb-inset-top, 0px); padding-right: calc(14px + var(--tb-inset-right, 0px)); }
+  .split { width: 7px; flex: none; cursor: col-resize; position: relative; }
+  .split::before { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--tb-border); transition: background .12s; }
+  .split:hover::before, .split.dragging::before { background: var(--tb-accent); }
+
+  .bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--tb-bg-1); border-bottom: 1px solid var(--tb-border); flex-wrap: wrap; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tb-err); flex: none; }
+  .dot.on { background: var(--tb-ok); }
+  .title { font-weight: 600; font-size: 14px; }
+  .chips { color: var(--tb-text-dim); font-size: 11px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { background: var(--tb-bg-2); border-radius: 999px; padding: 1px 8px; }
+  .sep { width: 1px; align-self: stretch; background: var(--tb-border); }
+  .grow { flex: 1; }
+
+  input, textarea, button { font: inherit; color: inherit; }
+  .input, .textarea { background: var(--tb-bg); border: 1px solid var(--tb-border); border-radius: 6px; padding: 5px 8px; outline: none; min-width: 0; }
+  .input:focus, .textarea:focus { border-color: var(--tb-accent); }
+  .btn { background: var(--tb-bg-2); border: 1px solid var(--tb-border); border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { border-color: var(--tb-border-strong); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--tb-accent); border-color: transparent; color: #fff; }
+  .btn.ghost { background: transparent; }
+
+  .body { display: flex; flex: 1; min-height: 0; }
+  .folders { width: 218px; min-width: 218px; overflow: auto; border-right: 1px solid var(--tb-border); background: var(--tb-bg-1); padding: 8px 6px; }
+  .group { padding: 10px 8px 5px; font-size: 10.5px; color: var(--tb-text-dim); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--tb-border); margin-bottom: 5px; }
+  .folder { display: flex; align-items: center; gap: 6px; padding: 5px 8px 5px 0; border-radius: 6px; cursor: pointer; color: var(--tb-text-dim); white-space: nowrap; overflow: hidden; }
+  .folder.child { position: relative; }
+  .folder.child::before { content: ''; position: absolute; left: var(--guide, 15px); top: 1px; bottom: 1px; width: 1px; background: var(--tb-border); }
+  .folder-icon { width: 18px; flex: none; text-align: center; font-size: 11.5px; opacity: .9; }
+  .folder-name { overflow: hidden; text-overflow: ellipsis; }
+  .folder-more { margin-left: auto; padding-left: 6px; opacity: .5; flex: none; }
+  .folder-caret { width: 13px; flex: none; text-align: center; opacity: .6; cursor: pointer; font-size: 9px; }
+  .folder-caret:hover { opacity: 1; }
+  .folder-spacer { width: 13px; flex: none; }
+  .avatar { width: 26px; height: 26px; flex: none; margin-right: 9px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: .3px; }
+  .item-from { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; }
+  .progress { margin: 16px auto 0; width: 220px; height: 4px; border-radius: 999px; background: var(--tb-bg-2); overflow: hidden; }
+  .progress > i { display: block; width: 40%; height: 100%; border-radius: 999px; background: var(--tb-accent); animation: tbslide 1.15s ease-in-out infinite; }
+  @keyframes tbslide { 0% { margin-left: -40% } 100% { margin-left: 100% } }
+  .thread-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--tb-border); background: var(--tb-bg-1); cursor: pointer; }
+  .thread-head:hover { background: var(--tb-bg-2); }
+  .thread-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .thread-count { flex: none; font-size: 11px; color: var(--tb-text-dim); background: var(--tb-bg-2); border-radius: 999px; padding: 1px 8px; }
+  .item.threaded { padding-left: 24px; }
+  /* Forwarded/quoted headers inside HTML mail carry their own light inline
+     colours (Outlook/Thunderbird paste a white block); in a dark theme that
+     lands as a bright patch, so neutralise background and text colour. */
+  html.tb-dark .content.html,
+  html.tb-dark .content.html * { background-color: transparent !important; color: inherit !important; }
+  html.tb-dark .content.html a { color: var(--tb-accent) !important; }
+  html.tb-dark .content.html table,
+  html.tb-dark .content.html td,
+  html.tb-dark .content.html th { border-color: var(--tb-border-strong) !important; }
+  .folder:hover { background: var(--tb-bg-2); }
+  .folder.active { background: var(--tb-bg-2); color: var(--tb-text); font-weight: 600; }
+  .folder span { overflow: hidden; text-overflow: ellipsis; }
+
+  .list { width: 336px; min-width: 280px; overflow: auto; border-right: 1px solid var(--tb-border); }
+  .item { padding: 9px 12px; border-bottom: 1px solid var(--tb-border); cursor: pointer; display: flex; align-items: flex-start; }
+  .item > .item-main { flex: 1; min-width: 0; }
+  .item:hover { background: var(--tb-bg-1); }
+  .item.active { background: var(--tb-bg-2); }
+  .item .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .item .from { color: var(--tb-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .date { color: var(--tb-text-dim); font-size: 11px; white-space: nowrap; }
+  .item .subject { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item.unread .subject { font-weight: 700; }
+  .item.unread .from { color: var(--tb-text); }
+
+  .reader { flex: 1; min-width: 0; overflow: auto; padding: 16px 20px; }
+  .reader-head { border-bottom: 1px solid var(--tb-border); padding-bottom: 10px; margin-bottom: 14px; }
+  .reader h1 { font-size: 16px; margin: 0 0 8px; word-break: break-word; }
+  .meta { color: var(--tb-text-dim); font-size: 12px; line-height: 1.8; word-break: break-word; white-space: pre-line; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  .content { white-space: pre-wrap; word-break: break-word; line-height: 1.75; }
+  .content.html { white-space: normal; }
+  .content.html { max-width: 920px; }
+  .content.html img { max-width: 100%; height: auto; border-radius: 6px; }
+  .content.html a { color: var(--tb-accent); }
+  .content.html blockquote { border-left: 3px solid var(--tb-border-strong); margin-left: 0; padding-left: 12px; color: var(--tb-text-dim); }
+  .content.html table { border-collapse: collapse; }
+  .reader h1 { line-height: 1.45; }
+  .item.unread { box-shadow: inset 2px 0 0 var(--tb-accent); }
+  .att-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .att-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; background: var(--tb-bg-2); color: var(--tb-text-dim); font-size: 11.5px; }
+  .att-chip:hover { color: var(--tb-text); }
+  .content.html table { max-width: 100%; }
+
+  .empty { color: var(--tb-text-dim); padding: 44px 24px; text-align: center; line-height: 1.9; }
+  .hint { max-width: 540px; margin: 0 auto; text-align: left; }
+  .hint h3 { margin: 0 0 10px; font-size: 14px; color: var(--tb-text); }
+  .hint ol { margin: 0; padding-left: 20px; }
+  .code { background: var(--tb-bg-2); border-radius: 4px; padding: 1px 5px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+  .compose { border-top: 1px solid var(--tb-border-strong); background: var(--tb-bg-1); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .crow { display: flex; gap: 8px; align-items: center; }
+  .crow > label { width: 46px; flex: none; color: var(--tb-text-dim); }
+  .crow > .input { flex: 1; }
+  textarea.textarea { resize: vertical; min-height: 120px; }
+
+  .foot { border-top: 1px solid var(--tb-border); padding: 6px 14px; font-size: 11px; color: var(--tb-text-dim); background: var(--tb-bg-1); display: flex; gap: 14px; flex-wrap: wrap; }
+  .toast { padding: 6px 14px; font-size: 12px; }
+  .toast.err { color: var(--tb-err); }
+  .toast.ok { color: var(--tb-ok); }
+  .ai { border-top: 1px solid var(--tb-border-strong); background: var(--tb-bg-1); display: flex; flex-direction: column; max-height: 46%; }
+  .ai-head { display: flex; align-items: center; gap: 8px; padding: 8px 14px 6px; }
+  .ai-title { font-weight: 600; }
+  .ai-model { color: var(--tb-text-dim); font-size: 11px; }
+  .ai-body { overflow: auto; padding: 4px 14px 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.75; }
+  .ai-body strong { font-weight: 700; }
+  #ai-askrow { padding: 0 14px 8px; }
+  #ai-askrow .input { flex: 1; }
+  .selmenu { position: fixed; z-index: 50; display: flex; gap: 2px; padding: 4px; background: var(--tb-bg-2); border: 1px solid var(--tb-border-strong); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+  .selmenu button { background: transparent; border: 0; color: var(--tb-text); padding: 4px 9px; border-radius: 6px; cursor: pointer; font: inherit; white-space: nowrap; }
+  .selmenu button:hover { background: var(--tb-bg); }
+  .pick { margin: 3px 8px 0 0; flex: none; }
+  .item.picked { background: var(--tb-bg-2); }
+  .spin { color: var(--tb-text-dim); }
+  .rrow { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--tb-border); }
+  .rrow-main { flex: 1; min-width: 0; }
+  .rrow-name { font-weight: 600; }
+  .rrow-desc { color: var(--tb-text-dim); font-size: 11px; line-height: 1.6; }
+  .rrow.disabled .rrow-name, .rrow.disabled .rrow-desc { opacity: .55; }
+  .rform { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--tb-border); }
+  .rform .crow > label { width: 68px; }
+  .rform .crow select { background: var(--tb-bg); border: 1px solid var(--tb-border); border-radius: 6px; padding: 4px 6px; color: inherit; }
+  .rlog { margin-top: 8px; font-size: 11px; color: var(--tb-text-dim); line-height: 1.7; }
+  .rlog b { color: var(--tb-text); font-weight: 600; }
+  .ai-body .rform { max-width: 720px; }
+  /* ---------- visual pass: consistent radii, quiet surfaces, clearer focus ---------- */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--tb-border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--tb-text-dim); background-clip: content-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .bar { box-shadow: 0 1px 0 var(--tb-border); }
+  .chip { border: 1px solid var(--tb-border); }
+  .folders { padding: 8px 8px 18px; }
+  .folder { gap: 7px; font-size: 12.5px; }
+  .folder.active { box-shadow: inset 2px 0 0 var(--tb-accent); }
+  .group { border-bottom: none; margin-bottom: 2px; padding-bottom: 2px; }
+  .item { transition: background .12s ease, box-shadow .12s ease; }
+  .item:hover { box-shadow: inset 2px 0 0 var(--tb-border-strong); }
+  .item.active { box-shadow: inset 2px 0 0 var(--tb-accent); }
+  .item .subject { font-size: 12.5px; }
+  .thread-head { position: sticky; top: 0; z-index: 2; }
+  .reader { padding: 18px 22px 30px; }
+  .reader-head { background: var(--tb-bg-1); border: 1px solid var(--tb-border); border-radius: 10px; padding: 14px 16px; margin-bottom: 18px; }
+  .reader-head h1 { font-size: 17px; margin-bottom: 10px; }
+  .actions { gap: 6px; row-gap: 8px; align-items: center; }
+  .actions .btn { border-radius: 999px; padding: 5px 12px; font-size: 12.5px; }
+  .actions .btn.ai-act { border-color: color-mix(in srgb, var(--tb-accent) 38%, transparent); background: color-mix(in srgb, var(--tb-accent) 13%, transparent); }
+  .actions .btn.ai-act:hover { background: color-mix(in srgb, var(--tb-accent) 22%, transparent); }
+  .sep-v { width: 1px; align-self: stretch; min-height: 18px; background: var(--tb-border); margin: 0 4px; }
+  .ai { box-shadow: 0 -8px 22px rgba(0,0,0,.10); }
+  .ai-head { padding: 10px 16px 8px; }
+  .ai-badge { background: var(--tb-accent); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .8px; padding: 2px 7px; border-radius: 6px; }
+  .ai-model { font-family: ui-monospace, Consolas, monospace; }
+  .ai-body { padding: 6px 16px 16px; font-size: 13px; }
+  .ai-lang { background: var(--tb-bg); color: inherit; border: 1px solid var(--tb-border); border-radius: 999px; padding: 4px 10px; font: inherit; font-size: 12px; }
+  .ai-typing { display: inline-flex; gap: 3px; margin-right: 6px; vertical-align: middle; }
+  .ai-typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--tb-text-dim); animation: tbblink 1.2s infinite; }
+  .ai-typing i:nth-child(2) { animation-delay: .2s; }
+  .ai-typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes tbblink { 0%, 80%, 100% { opacity: .25 } 40% { opacity: 1 } }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="bar">
+    <span class="dot" id="dot"></span>
+    <span class="title">Thunderbird</span>
+    <span class="chips" id="chips"></span>
+    <span class="sep"></span>
+    <input class="input grow" id="search" placeholder="搜索邮件…" style="max-width:260px">
+    <button class="btn" id="btn-search">搜索</button>
+    <button class="btn" id="btn-refresh">刷新</button>
+    <button class="btn" id="btn-rules">分类规则</button>
+    <button class="btn" id="btn-group" title="按主题聚合">聚合</button>
+    <button class="btn" id="btn-ai-sum" hidden>总结已选</button>
+    <button class="btn" id="btn-ai-ask" hidden>提问已选</button>
+    <button class="btn primary" id="btn-compose">写邮件</button>
+  </div>
+
+  <div class="toast err" id="toast-err" hidden></div>
+  <div class="toast ok" id="toast-ok" hidden></div>
+
+  <div class="body" id="online" hidden>
+    <div class="folders" id="folders"></div>
+    <div class="split" id="split-a" title="拖动调节宽度"></div>
+    <div class="list" id="list"></div>
+    <div class="split" id="split-b" title="拖动调节宽度"></div>
+    <div class="reader" id="reader"></div>
+  </div>
+
+  <div class="body" id="offline">
+    <div class="empty" style="flex:1;overflow:auto">
+      <div class="hint">
+        <h3>还没有连上 Thunderbird</h3>
+        <p>DSH 侧已经就绪，正在监听 <span class="code">/api/thunderbird/*</span>。需要一个客户端来轮询它：</p>
+        <ol>
+          <li>真实邮件：把 <span class="code">dsh-thunderbird/thunderbird-addon</span> 作为临时扩展加载进 Thunderbird（设置 → 附加组件 → 调试附加组件 → 临时载入）。</li>
+          <li>只想验证链路：终端运行 <span class="code">node dsh-thunderbird/dev/mock-thunderbird.js</span></li>
+        </ol>
+        <p>两者都会长轮询同一个端点，连上后这个面板会自动出现邮件。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="ai" id="ai" hidden>
+    <div class="ai-head">
+      <span class="ai-badge">AI</span>
+      <span class="ai-title" id="ai-title">AI</span>
+      <span class="ai-model" id="ai-model"></span>
+      <span class="grow"></span>
+      <select class="ai-lang" id="ai-lang" hidden title="翻译目标语言">
+        <option value="中文">译为中文</option>
+        <option value="English">译为 English</option>
+        <option value="日本語">译为 日本語</option>
+      </select>
+      <button class="btn" id="ai-copy">复制</button>
+      <button class="btn" id="ai-reply">填入回复</button>
+      <button class="btn" id="ai-new">填入新邮件</button>
+      <button class="btn" id="ai-close">关闭</button>
+    </div>
+    <div class="crow" id="ai-askrow" hidden>
+      <input class="input" id="ai-question" placeholder="针对这段内容提问…（回车发送）">
+      <button class="btn primary" id="ai-send">提问</button>
+    </div>
+    <div class="ai-body" id="ai-body"></div>
+  </div>
+
+  <div class="ai" id="rules" hidden>
+    <div class="ai-head">
+      <span class="ai-title">分类规则</span>
+      <span class="ai-model" id="rules-count"></span>
+      <span class="grow"></span>
+      <button class="btn" id="rules-new">新建</button>
+      <button class="btn" id="rules-test">试运行</button>
+      <button class="btn" id="rules-run">立即执行</button>
+      <button class="btn" id="rules-close">关闭</button>
+    </div>
+    <div class="ai-body" id="rules-body"></div>
+  </div>
+
+  <div class="selmenu" id="selmenu" hidden>
+    <button data-act="ask">问 AI</button>
+    <button data-act="summarize">总结</button>
+    <button data-act="translate">翻译</button>
+    <button data-act="rewrite">改写</button>
+  </div>
+
+  <div class="compose" id="compose" hidden>
+    <div class="crow"><label>收件人</label><input class="input" id="c-to" placeholder="a@b.com, c@d.com"></div>
+    <div class="crow"><label>抄送</label><input class="input" id="c-cc"></div>
+    <div class="crow"><label>主题</label><input class="input" id="c-subject"></div>
+    <textarea class="textarea" id="c-body" placeholder="正文（纯文本）"></textarea>
+    <div class="crow">
+      <button class="btn primary" id="btn-send">发送</button>
+      <button class="btn" id="btn-cancel">取消</button>
+      <button class="btn" id="btn-ai-draft">AI 代写</button>
+      <span class="meta">通过 Thunderbird 的身份发送</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    <span id="f-status">等待 Thunderbird 连接</span>
+    <span id="f-unread">未读 0</span>
+    <span id="f-handled">已处理命令 0</span>
+    <span class="code">/api/thunderbird/poll</span>
+  </div>
+</div>
+
+<script>
+'use strict'
+
+var state = {
+  online: false,
+  accounts: [],
+  folders: [],
+  folderId: null,
+  messages: [],
+  current: null,
+  body: null,
+  bodyError: '',
+  bodyManual: false,
+  showHtml: false,
+  seq: 0,
+  handled: 0,
+  checked: [],
+  ai: { open: false, busy: false, text: '', error: '', model: '', title: '', ask: null },
+}
+
+var $ = function (id) { return document.getElementById(id) }
+
+function rpc (method, params, timeoutMs) {
+  var url = '/api/thunderbird/rpc?method=' + encodeURIComponent(method)
+  if (params) url += '&params=' + encodeURIComponent(JSON.stringify(params))
+  if (timeoutMs) url += '&timeoutMs=' + Math.round(timeoutMs)
+  return fetch(url, { cache: 'no-store' }).then(function (res) { return res.json() })
+}
+
+function call (method, params, timeoutMs) {
+  return rpc(method, params, timeoutMs).then(function (out) {
+    if (!out || out.ok !== true) throw new Error((out && out.error) || ('调用失败：' + method))
+    return out.result
+  })
+}
+
+function emailOf (value) {
+  var text = String(value == null ? '' : value)
+  var at = text.indexOf('<')
+  if (at >= 0) {
+    var end = text.indexOf('>', at)
+    return text.slice(at + 1, end < 0 ? undefined : end).trim()
+  }
+  return text.trim()
+}
+
+function nameOf (value) {
+  var text = String(value == null ? '' : value)
+  var at = text.indexOf('<')
+  var name = (at > 0 ? text.slice(0, at) : text).replace(/"/g, '').trim()
+  return name || emailOf(text) || '(未知发件人)'
+}
+
+function pad (n) { return String(n).padStart(2, '0') }
+
+function fmtDate (ts) {
+  if (!ts) return ''
+  var d = new Date(ts)
+  var now = new Date()
+  if (d.toDateString() === now.toDateString()) return pad(d.getHours()) + ':' + pad(d.getMinutes())
+  if (d.getFullYear() === now.getFullYear()) return (d.getMonth() + 1) + '月' + d.getDate() + '日'
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+}
+
+function fmtFull (ts) {
+  if (!ts) return ''
+  var d = new Date(ts)
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes())
+}
+
+function fmtSize (bytes) {
+  if (!bytes) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1048576).toFixed(1) + ' MB'
+}
+
+function sanitize (html) {
+  return String(html == null ? '' : html)
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object[\s\S]*?<\/object>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '$1="#"')
+}
+
+var SPECIAL = {
+  inbox: '收件箱', drafts: '草稿', sent: '已发送', trash: '废纸篓',
+  templates: '模板', archives: '归档', junk: '垃圾邮件', outbox: '发件箱',
+}
+
+var FOLDER_ICON = {
+  inbox: '📥', sent: '📤', drafts: '📝', trash: '🗑',
+  junk: '🚫', archives: '📦', templates: '📄', outbox: '📮',
+}
+
+function folderIcon (folder) {
+  var uses = folder.specialUse || []
+  for (var i = 0; i < uses.length; i++) {
+    if (FOLDER_ICON[uses[i]]) return FOLDER_ICON[uses[i]]
+  }
+  return folder.depth > 0 ? '📁' : '🗂'
+}
+
+// The account is already the group header above the rows, so repeating it in
+// every label only made the hierarchy harder to read.
+function folderLabel (folder) {
+  if (folder.name) return folder.name
+  var uses = folder.specialUse || []
+  for (var i = 0; i < uses.length; i++) {
+    if (SPECIAL[uses[i]]) return SPECIAL[uses[i]]
+  }
+  return '(未命名)'
+}
+
+function flatten (accounts) {
+  var out = []
+  function walk (folder, account, depth) {
+    if (!folder) return
+    var kids = folder.subFolders || []
+    out.push({
+      id: folder.id,
+      name: folder.name || '(未命名)',
+      path: folder.path || '',
+      accountId: folder.accountId,
+      accountName: account.name,
+      specialUse: folder.specialUse || [],
+      depth: depth,
+      hasChildren: kids.length > 0,
+    })
+    for (var i = 0; i < kids.length; i++) walk(kids[i], account, depth + 1)
+  }
+  for (var i = 0; i < accounts.length; i++) {
+    var root = accounts[i].rootFolder
+    if (!root) continue
+    var kids = root.subFolders || []
+    for (var j = 0; j < kids.length; j++) walk(kids[j], accounts[i], 0)
+  }
+  return out
+}
+
+function setError (message) {
+  var el = $('toast-err')
+  if (!message) { el.hidden = true; el.textContent = ''; return }
+  el.textContent = message
+  el.hidden = false
+}
+
+function setNotice (message) {
+  var el = $('toast-ok')
+  if (!message) { el.hidden = true; el.textContent = ''; return }
+  el.textContent = message
+  el.hidden = false
+}
+
+function renderChips () {
+  $('chips').innerHTML = ''
+  for (var i = 0; i < state.accounts.length; i++) {
+    var chip = document.createElement('span')
+    chip.className = 'chip'
+    chip.textContent = state.accounts[i].name
+    $('chips').appendChild(chip)
+  }
+}
+
+function renderFolders () {
+  var host = $('folders')
+  host.innerHTML = ''
+  state.collapsed = state.collapsed || {}
+  var last = null
+  var skipDepth = -1
+  for (var i = 0; i < state.folders.length; i++) {
+    var folder = state.folders[i]
+    // Children of a collapsed folder are skipped until the depth comes back up.
+    if (skipDepth >= 0 && folder.depth > skipDepth) continue
+    skipDepth = -1
+    if (folder.accountId !== last) {
+      last = folder.accountId
+      var group = document.createElement('div')
+      group.className = 'group'
+      group.textContent = folder.accountName || folder.accountId
+      host.appendChild(group)
+    }
+    var row = document.createElement('div')
+    row.className = 'folder'
+      + (folder.depth > 0 ? ' child' : '')
+      + (folder.id === state.folderId ? ' active' : '')
+    row.style.paddingLeft = (10 + folder.depth * 16) + 'px'
+    if (folder.depth > 0) {
+      // Vertical guide so a child reads as belonging to the folder above it.
+      row.style.setProperty('--guide', (10 + (folder.depth - 1) * 16 + 7) + 'px')
+    }
+    row.title = folder.path || folder.name
+    var caret = document.createElement('span')
+    if (folder.hasChildren) {
+      caret.className = 'folder-caret'
+      caret.textContent = state.collapsed[folder.id] ? '▸' : '▾'
+      caret.title = state.collapsed[folder.id] ? '展开' : '折叠'
+      caret.onclick = (function (id) {
+        return function (event) {
+          event.stopPropagation()
+          state.collapsed[id] = !state.collapsed[id]
+          renderFolders()
+        }
+      })(folder.id)
+    } else {
+      caret.className = 'folder-spacer'
+    }
+    var icon = document.createElement('span')
+    icon.className = 'folder-icon'
+    icon.textContent = folderIcon(folder)
+    var label = document.createElement('span')
+    label.className = 'folder-name'
+    label.textContent = folderLabel(folder)
+    row.appendChild(caret)
+    row.appendChild(icon)
+    row.appendChild(label)
+    row.onclick = (function (id) {
+      return function () { selectFolder(id) }
+    })(folder.id)
+    host.appendChild(row)
+    if (folder.hasChildren && state.collapsed[folder.id]) skipDepth = folder.depth
+  }
+}
+
+// Sender identity: address-book name when we know it, initials avatar otherwise.
+function abbrevOf (value) {
+  var text = nameOf(value)
+  var parts = text.split(/[\s._\-@]+/).filter(function (p) { return p.length > 0 })
+  var out = ''
+  for (var i = 0; i < parts.length && out.length < 2; i++) {
+    var ch = parts[i].charAt(0)
+    if (/[a-zA-Z0-9\u4e00-\u9fa5]/.test(ch)) out += ch
+  }
+  return (out || '?').toUpperCase()
+}
+
+function hueOf (value) {
+  var text = String(value || '')
+  var hue = 0
+  for (var i = 0; i < text.length; i++) hue = (hue * 31 + text.charCodeAt(i)) % 360
+  return hue
+}
+
+function avatarEl (message) {
+  var span = document.createElement('span')
+  span.className = 'avatar'
+  span.textContent = abbrevOf(message.author)
+  span.style.background = 'hsl(' + hueOf(emailOf(message.author)) + ',42%,40%)'
+  return span
+}
+
+function normSubject (value) {
+  return String(value || '')
+    .replace(/^((re|fwd|fw|aw|sv|答复|回复|转发)\s*[:：]\s*)+/i, '')
+    .trim() || '(无主题)'
+}
+
+function renderList () {
+  var host = $('list')
+  host.innerHTML = ''
+  if (!state.messages.length) {
+    var empty = document.createElement('div')
+    empty.className = 'empty'
+    empty.textContent = state.folders.length ? '这个文件夹是空的' : '没有可显示的文件夹'
+    host.appendChild(empty)
+    return
+  }
+  // Row list: either the plain messages, or subject threads with their messages
+  // nested underneath while expanded. Grouping is on by default.
+  if (state.group === undefined) state.group = true
+  var rows = []
+  if (!state.group) {
+    for (var r0 = 0; r0 < state.messages.length; r0++) rows.push({ kind: 'msg', message: state.messages[r0] })
+  } else {
+    state.expanded = state.expanded || {}
+    var order = []
+    var bySubject = {}
+    for (var r1 = 0; r1 < state.messages.length; r1++) {
+      var threadKey = normSubject(state.messages[r1].subject)
+      if (!bySubject[threadKey]) { bySubject[threadKey] = []; order.push(threadKey) }
+      bySubject[threadKey].push(state.messages[r1])
+    }
+    for (var t = 0; t < order.length; t++) {
+      rows.push({ kind: 'thread', key: order[t], messages: bySubject[order[t]] })
+      if (state.expanded[order[t]]) {
+        for (var tj = 0; tj < bySubject[order[t]].length; tj++) {
+          rows.push({ kind: 'msg', message: bySubject[order[t]][tj], threaded: true })
+        }
+      }
+    }
+  }
+
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i].kind === 'thread') {
+      var group = rows[i]
+      var head = document.createElement('div')
+      head.className = 'thread-head'
+      var caret = document.createElement('span')
+      caret.className = 'folder-caret'
+      caret.textContent = state.expanded[group.key] ? '▾' : '▸'
+      var headSubject = document.createElement('span')
+      headSubject.className = 'thread-subject'
+      headSubject.textContent = group.key
+      var count = document.createElement('span')
+      count.className = 'thread-count'
+      var unreadCount = group.messages.filter(function (m) { return !m.read }).length
+      count.textContent = group.messages.length + (unreadCount > 0 ? ' · 未读 ' + unreadCount : '')
+      head.appendChild(caret)
+      head.appendChild(headSubject)
+      head.appendChild(count)
+      head.onclick = (function (grp) {
+        return function () {
+          var willExpand = !state.expanded[grp.key]
+          state.expanded[grp.key] = willExpand
+          renderList()
+          // Expanding a thread loads its newest message straight away.
+          if (willExpand && grp.messages.length > 0) openMessage(grp.messages[0])
+        }
+      })(group)
+      host.appendChild(head)
+      continue
+    }
+
+    var message = rows[i].message
+    var picked = state.checked.indexOf(message.id) >= 0
+    var item = document.createElement('div')
+    item.className = 'item' + (message.read ? '' : ' unread')
+      + (state.current && state.current.id === message.id ? ' active' : '')
+      + (picked ? ' picked' : '')
+      + (rows[i].threaded ? ' threaded' : '')
+
+    var pick = document.createElement('input')
+    pick.type = 'checkbox'
+    pick.className = 'pick'
+    pick.checked = picked
+    pick.title = '勾选后可批量总结 / 提问'
+    pick.onclick = (function (id) {
+      return function (event) { event.stopPropagation(); togglePick(id) }
+    })(message.id)
+    item.appendChild(pick)
+    item.appendChild(avatarEl(message))
+
+    var main = document.createElement('div')
+    main.className = 'item-main'
+
+    var top = document.createElement('div')
+    top.className = 'top'
+    var from = document.createElement('span')
+    from.className = 'from'
+    from.textContent = (message.flagged ? '★ ' : '') + nameOf(message.author)
+    var date = document.createElement('span')
+    date.className = 'date'
+    date.textContent = fmtDate(message.date)
+    top.appendChild(from)
+    top.appendChild(date)
+
+    var subject = document.createElement('div')
+    subject.className = 'subject'
+    subject.textContent = message.subject || '(无主题)'
+
+    main.appendChild(top)
+    main.appendChild(subject)
+    item.appendChild(main)
+    item.onclick = (function (m) { return function () { openMessage(m) } })(message)
+    host.appendChild(item)
+  }
+
+  // No button: the list pages itself when scrolled near the end. This line just
+  // reports how much of the folder is loaded.
+  if (state.total) {
+    var hint = document.createElement('div')
+    hint.className = 'meta'
+    hint.style.textAlign = 'center'
+    hint.style.padding = '10px'
+    hint.textContent = state.messages.length < state.total
+      ? '已加载 ' + state.messages.length + ' / 共 ' + state.total + ' 封 · 继续向下滚动'
+      : '共 ' + state.total + ' 封'
+    host.appendChild(hint)
+  }
+}
+
+function renderReader () {
+  var host = $('reader')
+  host.innerHTML = ''
+  if (!state.current) {
+    var empty = document.createElement('div')
+    empty.className = 'empty'
+    empty.textContent = '选择左侧的一封邮件查看内容'
+    host.appendChild(empty)
+    return
+  }
+  var message = state.current
+
+  var head = document.createElement('div')
+  head.className = 'reader-head'
+
+  var title = document.createElement('h1')
+  title.textContent = message.subject || '(无主题)'
+  head.appendChild(title)
+
+  var meta = document.createElement('div')
+  meta.className = 'meta'
+  var lines = ['发件人：' + nameOf(message.author) + '  <' + emailOf(message.author) + '>']
+  if (message.recipients && message.recipients.length) lines.push('收件人：' + message.recipients.map(nameOf).join(', '))
+  if (message.ccList && message.ccList.length) lines.push('抄送：' + message.ccList.map(nameOf).join(', '))
+  lines.push('时间：' + fmtFull(message.date) + (message.size ? '　大小：' + fmtSize(message.size) : ''))
+  meta.textContent = lines.join('\n')
+  head.appendChild(meta)
+
+  var actions = document.createElement('div')
+  actions.className = 'actions'
+  actions.appendChild(button('回复', function () { startCompose(message) }))
+  actions.appendChild(button('AI 总结', function () { runAi('summarize') }))
+  actions.appendChild(button('AI 翻译', function () { runAi('translate') }))
+  actions.appendChild(button('AI 改写', function () { openAsk('rewrite', bodyTextForAi(), '改写要求（如：更简洁、更正式、语气更硬）', 'AI 改写') }))
+  actions.appendChild(button('AI 回复草稿', function () { runAi('reply') }))
+  actions.appendChild(button('AI 分类建议', function () { aiClassifyCurrent() }))
+  actions.appendChild(button('用这封建规则', function () { ruleFromCurrent() }))
+  // Tint the AI actions and drop a divider after them, so "what the model does"
+  // reads as one group and "what touches the message" as another.
+  for (var ai2 = 0; ai2 < actions.children.length; ai2++) {
+    var actionNode = actions.children[ai2]
+    if (actionNode.tagName === 'BUTTON' && actionNode.textContent.indexOf('AI ') === 0) actionNode.classList.add('ai-act')
+  }
+  var divider = document.createElement('span')
+  divider.className = 'sep-v'
+  actions.appendChild(divider)
+  actions.appendChild(button(message.flagged ? '取消星标' : '加星标', function () { toggleFlag() }))
+  actions.appendChild(button(message.read ? '标为未读' : '标为已读', function () { setRead(!message.read) }))
+  actions.appendChild(button('删除', function () { removeCurrent() }))
+  actions.appendChild(button('在 Thunderbird 中打开', function () { openInThunderbird(message.id) }))
+  if (state.body && state.body.html) {
+    actions.appendChild(button(state.showHtml ? '纯文本' : 'HTML', function () {
+      state.showHtml = !state.showHtml
+      renderReader()
+    }))
+  }
+  head.appendChild(actions)
+  host.appendChild(head)
+
+  if (!state.body) {
+    var loading = document.createElement('div')
+    loading.className = 'empty'
+    if (state.bodyManual) {
+      loading.textContent = '这封邮件 ' + fmtSize(state.current.size) + '，需要先从服务器下载'
+      var loadBtn = document.createElement('button')
+      loadBtn.className = 'btn'
+      loadBtn.style.marginTop = '12px'
+      loadBtn.textContent = '载入正文'
+      loadBtn.onclick = function () { loadBody(state.current.id) }
+      loading.appendChild(document.createElement('br'))
+      loading.appendChild(loadBtn)
+    } else if (state.bodyError) {
+      loading.textContent = '正文载入失败：' + state.bodyError
+      var retry = document.createElement('button')
+      retry.className = 'btn'
+      retry.style.marginTop = '12px'
+      retry.textContent = '重试'
+      retry.onclick = function () { loadBody(state.current.id) }
+      loading.appendChild(document.createElement('br'))
+      loading.appendChild(retry)
+    } else {
+      loading.textContent = '正在载入邮件正文…（大邮件需要先从服务器下载，可能较慢）'
+      var bar = document.createElement('div')
+      bar.className = 'progress'
+      bar.appendChild(document.createElement('i'))
+      loading.appendChild(bar)
+      var elapsed = document.createElement('div')
+      elapsed.className = 'meta'
+      elapsed.style.marginTop = '10px'
+      elapsed.textContent = '已等待 0 秒'
+      loading.appendChild(elapsed)
+      state.bodyElapsedEl = elapsed
+    }
+    host.appendChild(loading)
+    return
+  }
+  if (!state.body.text && !state.body.html) {
+    var atts = state.body.attachments || []
+    var none = document.createElement('div')
+    none.className = 'empty'
+    none.textContent = atts.length
+      ? '这封邮件没有可读正文，包含 ' + atts.length + ' 个附件'
+      : '这封邮件没有可显示的正文（可能是只下载了邮件头，或转发邮件本身没有正文）'
+    if (atts.length) {
+      var attList = document.createElement('div')
+      attList.className = 'meta'
+      attList.style.marginTop = '12px'
+      attList.textContent = atts.map(function (a) {
+        return '📎 ' + (a.name || '(未命名)') + '　' + fmtSize(a.size) + (a.contentType ? '　' + a.contentType : '')
+      }).join('\n')
+      none.appendChild(attList)
+    }
+    var openBtn = document.createElement('button')
+    openBtn.className = 'btn'
+    openBtn.style.marginTop = '12px'
+    openBtn.textContent = '在 Thunderbird 中打开'
+    openBtn.onclick = function () { openInThunderbird(state.current.id) }
+    none.appendChild(document.createElement('br'))
+    none.appendChild(openBtn)
+    host.appendChild(none)
+    return
+  }
+  var content = document.createElement('div')
+  if (state.showHtml && state.body.html) {
+    content.className = 'content html'
+    content.innerHTML = resolveCidImages(sanitize(state.body.html), message.id)
+    content.addEventListener('click', function (event) {
+      var anchor = event.target && event.target.closest ? event.target.closest('a') : null
+      if (anchor) event.preventDefault()
+    })
+  } else {
+    content.className = 'content'
+    content.textContent = state.body.text || '(这封邮件只有 HTML 正文，点上方的 HTML 按钮查看原始排版)'
+  }
+  host.appendChild(content)
+
+  var attachments = state.body.attachments || []
+  if (attachments.length > 0) {
+    var chipsTitle = document.createElement('div')
+    chipsTitle.className = 'meta'
+    chipsTitle.style.marginTop = '20px'
+    chipsTitle.textContent = '附件 · ' + attachments.length + ' 个'
+    var chips = document.createElement('div')
+    chips.className = 'att-chips'
+    chips.style.marginTop = '8px'
+    for (var ai = 0; ai < attachments.length; ai++) {
+      var att = attachments[ai]
+      var chip = document.createElement('span')
+      chip.className = 'att-chip'
+      chip.title = (att.contentType || '') + ' · ' + fmtSize(att.size) + (att.contentId ? ' · 内嵌图' : '')
+      chip.textContent = '📎 ' + (att.name || '(未命名)') + ' · ' + fmtSize(att.size)
+      chips.appendChild(chip)
+    }
+    host.appendChild(chipsTitle)
+    host.appendChild(chips)
+  }
+}
+
+// Inline images are MIME parts the HTML body points at with src="cid:<contentId>".
+// The add-on fetches them as data: URLs on first use, then this re-renders.
+function cidLookup (map, cid) {
+  if (map[cid]) return map[cid]
+  try { if (map[decodeURIComponent(cid)]) return map[decodeURIComponent(cid)] } catch (error) { /* not encoded */ }
+  try { if (map[encodeURIComponent(cid)]) return map[encodeURIComponent(cid)] } catch (error) { /* ignore */ }
+  return null
+}
+
+function resolveCidImages (html, messageId) {
+  if (html.indexOf('cid:') < 0) return html
+  var cache = state.inlineImages
+  if (!cache || cache.messageId !== messageId) {
+    loadInlineImages(messageId)
+    // Blank the unresolved references so the browser does not show broken icons.
+    return html.replace(/(src|background)=(["'])cid:[^"']*\2/gi, '$1=$2$2')
+  }
+  return html.replace(/(src|background)=(["'])cid:([^"']+)\2/gi, function (whole, attr, quote, cid) {
+    var url = cidLookup(cache.map, cid)
+    return url ? attr + '=' + quote + url + quote : whole
+  })
+}
+
+function loadInlineImages (messageId) {
+  if (state.inlineImagesLoading === messageId) return
+  state.inlineImagesLoading = messageId
+  call('messages.inlineImages', { messageId: messageId }, 60000).then(function (out) {
+    var map = {}
+    var images = (out && out.images) || []
+    for (var i = 0; i < images.length; i++) {
+      if (images[i].dataUrl && images[i].contentId) map[images[i].contentId] = images[i].dataUrl
+    }
+    state.inlineImages = { messageId: messageId, map: map }
+    state.inlineImagesLoading = null
+    if (typeof Object.keys === 'function' && Object.keys(map).length > 0) renderReader()
+  }).catch(function () {
+    state.inlineImagesLoading = null
+    state.inlineImages = { messageId: messageId, map: {} }
+  })
+}
+
+function button (label, handler) {
+  var el = document.createElement('button')
+  el.className = 'btn'
+  el.textContent = label
+  el.onclick = handler
+  return el
+}
+
+function renderStatus () {
+  $('dot').className = 'dot' + (state.online ? ' on' : '')
+  $('online').hidden = !state.online
+  $('offline').hidden = state.online
+  $('f-status').textContent = state.online ? '已连接 Thunderbird' : '等待 Thunderbird 连接'
+  $('f-unread').textContent = '未读 ' + state.messages.filter(function (m) { return !m.read }).length
+  $('f-handled').textContent = '已处理命令 ' + state.handled
+}
+
+function render () {
+  renderStatus()
+  renderChips()
+  renderFolders()
+  renderList()
+  renderReader()
+  updatePickBar()
+  renderAi()
+}
+
+function loadFolders () {
+  return call('accounts.list').then(function (accounts) {
+    state.accounts = accounts || []
+    state.folders = flatten(state.accounts)
+    if (!state.folderId && state.folders.length) {
+      var inbox = state.folders.filter(function (f) { return (f.specialUse || []).indexOf('inbox') >= 0 })[0]
+      state.folderId = (inbox || state.folders[0]).id
+    }
+    render()
+    return state.folderId
+  })
+}
+
+function loadMessages (force) {
+  if (!state.folderId) { state.messages = []; render(); return Promise.resolve() }
+  if (!state.limit) state.limit = 200
+  state.cache = state.cache || {}
+  var cached = state.cache[state.folderId]
+  // Per-folder cache: painting the cached page first makes switching folders and
+  // re-entering a folder instant instead of re-querying the whole server list.
+  if (cached && cached.messages.length && cached.limit >= state.limit) {
+    state.messages = cached.messages.slice(0, state.limit)
+    state.total = cached.total
+    render()
+    if (!force && Date.now() - cached.at < 60000) return Promise.resolve()
+  }
+  return call('messages.list', { folderId: state.folderId, limit: state.limit }).then(function (page) {
+    state.messages = (page && page.messages) || []
+    state.total = (page && page.total) || state.messages.length
+    state.cache[state.folderId] = {
+      messages: state.messages,
+      total: state.total,
+      at: Date.now(),
+      limit: state.limit,
+    }
+    setError('')
+    render()
+  }).catch(function (error) {
+    state.messages = []
+    setError(error.message)
+    render()
+  })
+}
+
+function selectFolder (id) {
+  state.folderId = id
+  state.current = null
+  state.body = null
+  state.limit = 200
+  setNotice('')
+  render()
+  loadMessages()
+}
+
+var AUTO_LOAD_LIMIT = 1500000
+
+function openMessage (message) {
+  state.current = message
+  state.body = null
+  state.bodyError = ''
+  // Decoding pulls the whole message off the server; make the big ones opt-in.
+  state.bodyManual = !!(message.size && message.size > AUTO_LOAD_LIMIT)
+  state.showHtml = false
+  setNotice('')
+  render()
+  resetReaderScroll()
+  if (!state.bodyManual) loadBody(message.id)
+  if (!message.read) {
+    call('messages.update', { messageId: message.id, read: true }).then(function () {
+      message.read = true
+      render()
+    }).catch(function () {})
+  }
+}
+
+function resetReaderScroll () {
+  var el = $('reader')
+  if (el) el.scrollTop = 0
+}
+
+function loadBody (messageId) {
+  state.bodyError = ''
+  state.bodyManual = false
+  render()
+  resetReaderScroll()
+  // The API exposes no byte progress for an IMAP fetch, so show elapsed time
+  // against an indeterminate bar. The ticker stops itself once the node leaves
+  // the document (i.e. the body arrived and the reader re-rendered).
+  if (state.bodyTicker) clearInterval(state.bodyTicker)
+  state.bodyStartedAt = Date.now()
+  state.bodyTicker = setInterval(function () {
+    var el = state.bodyElapsedEl
+    if (!el || !el.isConnected) {
+      clearInterval(state.bodyTicker)
+      state.bodyTicker = null
+      return
+    }
+    el.textContent = '已等待 ' + Math.round((Date.now() - state.bodyStartedAt) / 1000) + ' 秒'
+  }, 1000)
+  // Decoding a large message over IMAP downloads it first, so allow real time.
+  call('messages.body', { messageId: messageId }, 90000).then(function (content) {
+    state.body = content
+    state.inlineImages = null
+    // Word/VML business mail often carries a short plain-text stub plus a much
+    // richer HTML body; show the HTML whenever it actually has more content.
+    if (content && content.html && (!content.text || content.html.length > content.text.length)) {
+      state.showHtml = true
+    }
+    render()
+    resetReaderScroll()
+  }).catch(function (error) {
+    state.bodyError = String((error && error.message) || error)
+    render()
+    resetReaderScroll()
+  })
+}
+
+function openInThunderbird (messageId) {
+  call('mail.open', { messageId: messageId }, 20000).then(function () {
+    setNotice('已在 Thunderbird 中打开')
+  }).catch(function (error) {
+    setError(String((error && error.message) || error))
+  })
+}
+
+function setRead (read) {
+  if (!state.current) return
+  var id = state.current.id
+  call('messages.update', { messageId: id, read: read }).then(function () {
+    state.current.read = read
+    state.messages.forEach(function (m) { if (m.id === id) m.read = read })
+    render()
+  }).catch(function (error) { setError(error.message) })
+}
+
+function toggleFlag () {
+  if (!state.current) return
+  var id = state.current.id
+  var next = !state.current.flagged
+  call('messages.update', { messageId: id, flagged: next }).then(function () {
+    state.current.flagged = next
+    state.messages.forEach(function (m) { if (m.id === id) m.flagged = next })
+    render()
+  }).catch(function (error) { setError(error.message) })
+}
+
+function removeCurrent () {
+  if (!state.current) return
+  var id = state.current.id
+  call('messages.delete', { messageIds: [id] }).then(function () {
+    state.messages = state.messages.filter(function (m) { return m.id !== id })
+    state.current = null
+    state.body = null
+    setNotice('已删除')
+    render()
+  }).catch(function (error) { setError(error.message) })
+}
+
+function runSearch () {
+  var text = $('search').value.trim()
+  if (!text) { loadMessages(); return }
+  call('messages.search', { text: text, limit: 80 }).then(function (page) {
+    state.messages = (page && page.messages) || []
+    setNotice('搜索「' + text + '」，命中 ' + state.messages.length + ' 封')
+    setError('')
+    render()
+  }).catch(function (error) { setError(error.message) })
+}
+
+function startCompose (message) {
+  $('compose').hidden = false
+  setNotice('')
+  if (message) {
+    var subject = String(message.subject || '')
+    $('c-to').value = emailOf(message.author)
+    $('c-cc').value = ''
+    $('c-subject').value = /^re:/i.test(subject) ? subject : 'Re: ' + subject
+    $('c-body').value = '\n\n-------- 原邮件 --------\n' + nameOf(message.author) + ' 写于 ' + fmtFull(message.date) + '\n'
+  } else {
+    $('c-to').value = ''
+    $('c-cc').value = ''
+    $('c-subject').value = ''
+    $('c-body').value = ''
+  }
+}
+
+function sendMail () {
+  var to = $('c-to').value.trim()
+  if (!to) { setError('请填写收件人'); return }
+  var sendButton = $('btn-send')
+  sendButton.disabled = true
+  sendButton.textContent = '发送中…'
+  call('messages.send', {
+    to: to,
+    cc: $('c-cc').value.trim(),
+    subject: $('c-subject').value,
+    body: $('c-body').value,
+    isPlainText: true,
+  }).then(function () {
+    $('compose').hidden = true
+    setError('')
+    setNotice('邮件已发送')
+  }).catch(function (error) {
+    setError(error.message)
+  }).then(function () {
+    sendButton.disabled = false
+    sendButton.textContent = '发送'
+  })
+}
+
+var selectionText = ''
+
+function stripHtml (html) {
+  var div = document.createElement('div')
+  div.innerHTML = sanitize(html)
+  return String(div.textContent || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+function bodyTextForAi () {
+  if (!state.body) return ''
+  if (state.body.text) return state.body.text
+  if (state.body.html) return stripHtml(state.body.html)
+  return ''
+}
+
+function renderRich (text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+}
+
+function renderAi () {
+  var panel = $('ai')
+  panel.hidden = !state.ai.open
+  if (!state.ai.open) return
+  $('ai-title').textContent = state.ai.title || 'AI'
+  $('ai-model').textContent = state.ai.model || ''
+  $('ai-lang').hidden = state.ai.action !== 'translate'
+  $('ai-askrow').hidden = !state.ai.ask
+  if (state.ai.ask) $('ai-question').placeholder = state.ai.ask.placeholder
+  var body = $('ai-body')
+  if (state.ai.error) {
+    body.className = 'ai-body toast err'
+    body.textContent = state.ai.error
+    return
+  }
+  body.className = 'ai-body'
+  if (state.ai.busy) {
+    var secs = Math.round((Date.now() - (state.ai.startedAt || Date.now())) / 1000)
+    body.innerHTML = '<span class="ai-typing"><i></i><i></i><i></i></span> 思考中… ' + secs + ' 秒'
+    return
+  }
+  body.innerHTML = renderRich(state.ai.text)
+}
+
+var AI_TITLES = {
+  summarize: 'AI 总结', translate: 'AI 翻译', rewrite: 'AI 改写',
+  reply: 'AI 回复草稿', draft: 'AI 代写', ask: 'AI 提问', classify: 'AI 分类',
+}
+
+function runAi (action, opts) {
+  var options = opts || {}
+  var text = options.text !== undefined ? options.text : bodyTextForAi()
+  if (action !== 'draft' && !String(text || '').trim()) {
+    setError('没有可用内容：这封邮件正文为空，可先用「在 Thunderbird 中打开」查看')
+    return
+  }
+  state.ai.open = true
+  state.ai.busy = true
+  state.ai.startedAt = Date.now()
+  state.ai.error = ''
+  state.ai.text = ''
+  state.ai.model = ''
+  state.ai.action = action
+  state.ai.contextText = text
+  state.ai.ask = null
+  state.ai.title = options.title || AI_TITLES[action] || 'AI'
+  if (state.ai.ticker) clearInterval(state.ai.ticker)
+  state.ai.ticker = setInterval(function () {
+    if (!state.ai.busy) { clearInterval(state.ai.ticker); state.ai.ticker = null; return }
+    renderAi()
+  }, 1000)
+  renderAi()
+  var payload = {
+    action: action,
+    text: text,
+    instruction: options.instruction || '',
+    targetLang: $('ai-lang') && $('ai-lang').value ? $('ai-lang').value : '中文',
+    subject: options.subject !== undefined ? options.subject : (state.current ? state.current.subject : ''),
+    from: options.from !== undefined ? options.from : (state.current ? state.current.author : ''),
+    maxTokens: options.maxTokens || (action === 'draft' ? 4000 : 3000),
+  }
+  fetch('/api/thunderbird/ai', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).then(function (res) { return res.json() }).then(function (out) {
+    state.ai.busy = false
+    if (!out || out.ok !== true) state.ai.error = (out && out.error) || 'AI 调用失败'
+    else if (!out.text) state.ai.error = '模型没有返回内容（多半是 token 预算不足），再点一次试试'
+    else {
+      state.ai.text = out.text
+      state.ai.model = out.model || ''
+      // Keep the input alive so the next question can build on this answer.
+      state.ai.ask = {
+        action: 'ask',
+        context: state.ai.contextText || '',
+        placeholder: '继续追问…（基于同一封邮件）',
+      }
+    }
+    renderAi()
+  }).catch(function (error) {
+    state.ai.busy = false
+    state.ai.error = String((error && error.message) || error)
+    renderAi()
+  })
+}
+
+function openAsk (action, contextText, placeholder, title) {
+  state.ai.open = true
+  state.ai.busy = false
+  state.ai.error = ''
+  state.ai.text = ''
+  state.ai.model = ''
+  state.ai.title = title || 'AI 提问'
+  state.ai.ask = { action: action, context: contextText, placeholder: placeholder || '输入你的问题…' }
+  renderAi()
+  setTimeout(function () { var el = $('ai-question'); if (el) el.focus() }, 30)
+}
+
+function aiSendQuestion () {
+  if (!state.ai.ask) return
+  var ask = state.ai.ask
+  var question = $('ai-question').value.trim()
+  if (ask.action === 'ask' && !question) { setError('请输入问题'); return }
+  state.ai.ask = null
+  $('ai-question').value = ''
+  runAi(ask.action, { text: ask.context, instruction: question, title: state.ai.title })
+}
+
+function aiCopy () {
+  if (!state.ai.text) return
+  try {
+    var ta = document.createElement('textarea')
+    ta.value = state.ai.text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    setNotice('已复制到剪贴板')
+  } catch (error) {
+    setError('复制失败，请手动选择文本')
+  }
+}
+
+function aiIntoReply () {
+  var text = state.ai.text
+  if (!text) return
+  var subject = state.current ? state.current.subject : ''
+  if (/^\s*主题[:：]/.test(text)) {
+    var lines = text.split('\n')
+    subject = lines[0].replace(/^\s*主题[:：]\s*/, '').trim()
+    text = lines.slice(1).join('\n').replace(/^\s*\n/, '')
+  }
+  // 代写场景下用户可能已经填过收件人，别覆盖它。
+  var typedTo = $('c-to').value.trim()
+  $('compose').hidden = false
+  if (!typedTo) $('c-to').value = state.current ? emailOf(state.current.author) : ''
+  $('c-subject').value = /^re:/i.test(subject) ? subject : ('Re: ' + subject)
+  $('c-body').value = text + '\n'
+  setNotice('已填入撰写区，确认后再点发送')
+}
+
+function togglePick (id) {
+  var at = state.checked.indexOf(id)
+  if (at >= 0) state.checked.splice(at, 1)
+  else state.checked.push(id)
+  renderList()
+  updatePickBar()
+}
+
+function updatePickBar () {
+  var count = state.checked.length
+  var sum = $('btn-ai-sum')
+  var ask = $('btn-ai-ask')
+  sum.hidden = count === 0
+  ask.hidden = count === 0
+  sum.textContent = '总结已选（' + count + '）'
+  ask.textContent = '提问已选（' + count + '）'
+}
+
+function collectCheckedText (done) {
+  var ids = state.checked.slice(0, 8)
+  if (!ids.length) { done(''); return }
+  var parts = []
+  var pending = ids.length
+  var finishOne = function () {
+    pending -= 1
+    if (pending === 0) done(parts.filter(Boolean).join('\n\n=====\n\n'))
+  }
+  for (var i = 0; i < ids.length; i++) {
+    (function (id, index) {
+      var message = null
+      for (var k = 0; k < state.messages.length; k++) {
+        if (state.messages[k].id === id) message = state.messages[k]
+      }
+      call('messages.body', { messageId: id }, 90000).then(function (content) {
+        var body = ''
+        if (content && content.text) body = content.text
+        else if (content && content.html) body = stripHtml(content.html)
+        parts[index] = '[邮件 ' + (index + 1) + ']\n主题：' + ((message && message.subject) || '(无主题)') +
+          '\n发件人：' + ((message && message.author) || '') + '\n\n' + body
+      }).catch(function () {
+        parts[index] = '[邮件 ' + (index + 1) + '] 正文读取失败'
+      }).then(finishOne)
+    })(ids[i], i)
+  }
+}
+
+function aiSummarizeSelection () {
+  if (!state.checked.length) return
+  setNotice('正在读取选中的 ' + state.checked.length + ' 封邮件…')
+  collectCheckedText(function (text) {
+    setNotice('')
+    if (!text) { setError('选中的邮件没有可用正文'); return }
+    runAi('summarize', { text: text, title: 'AI 总结 · ' + state.checked.length + ' 封' })
+  })
+}
+
+function aiAskSelection () {
+  if (!state.checked.length) return
+  setNotice('正在读取选中的 ' + state.checked.length + ' 封邮件…')
+  collectCheckedText(function (text) {
+    setNotice('')
+    if (!text) { setError('选中的邮件没有可用正文'); return }
+    openAsk('ask', text, '对这几封邮件提问…（例如：哪几封需要我本周回复？）', 'AI 提问 · ' + state.checked.length + ' 封')
+  })
+}
+
+function onReaderUp (event) {
+  var sel = window.getSelection ? window.getSelection() : null
+  var text = sel ? String(sel).trim() : ''
+  if (!text || text.length < 2) { hideSelMenu(); return }
+  var anchor = sel.anchorNode
+  var node = anchor && anchor.nodeType === 3 ? anchor.parentNode : anchor
+  var content = $('reader').querySelector('.content')
+  if (!content || !node || !content.contains(node)) { hideSelMenu(); return }
+  selectionText = text
+  var menu = $('selmenu')
+  menu.hidden = false
+  var x = Math.max(4, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8))
+  var y = Math.max(4, Math.min(event.clientY + 8, window.innerHeight - menu.offsetHeight - 8))
+  menu.style.left = x + 'px'
+  menu.style.top = y + 'px'
+}
+
+function hideSelMenu () {
+  $('selmenu').hidden = true
+}
+
+function onSelMenuClick (event) {
+  var act = event.target && event.target.getAttribute ? event.target.getAttribute('data-act') : null
+  if (!act) return
+  var text = selectionText
+  hideSelMenu()
+  if (!text) return
+  if (act === 'ask') openAsk('ask', text, '对选中的这段内容提问…', 'AI 提问 · 选段')
+  else if (act === 'summarize') runAi('summarize', { text: text, title: 'AI 总结 · 选段' })
+  else if (act === 'translate') runAi('translate', { text: text, title: 'AI 翻译 · 选段' })
+  else if (act === 'rewrite') openAsk('rewrite', text, '改写要求（如：更简洁、更正式）', 'AI 改写 · 选段')
+}
+
+function pollStatus () {
+  return fetch('/api/thunderbird/status', { cache: 'no-store' }).then(function (res) { return res.json() }).then(function (data) {
+    var was = state.online
+    state.online = !!(data && data.online)
+    state.handled = (data && data.handled) || 0
+    if (state.online && !was) {
+      loadFolders().then(loadMessages).catch(function (error) { setError(error.message) })
+    }
+    renderStatus()
+  }).catch(function () {
+    state.online = false
+    renderStatus()
+  })
+}
+
+function pollEvents () {
+  return fetch('/api/thunderbird/events?since=' + state.seq, { cache: 'no-store' }).then(function (res) { return res.json() }).then(function (data) {
+    if (!data) return
+    state.seq = data.seq || state.seq
+    var events = data.events || []
+    for (var i = 0; i < events.length; i++) {
+      if (events[i].type === 'newMail') {
+        var payload = events[i].data || {}
+        setNotice('收到 ' + (payload.count || 0) + ' 封新邮件' + (payload.folderName ? '（' + payload.folderName + '）' : ''))
+        if (state.folderId) loadMessages()
+      }
+    }
+  }).catch(function () {})
+}
+
+function isDarkColor (value) {
+  var v = String(value || '').trim()
+  var hex = /^#([0-9a-f]{6})$/i.exec(v)
+  if (hex) {
+    var n = parseInt(hex[1], 16)
+    return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) < 128
+  }
+  var rgb = /^rgba?\(([^)]+)\)/.exec(v)
+  if (rgb) {
+    var parts = rgb[1].split(',')
+    return (0.2126 * parseFloat(parts[0]) + 0.7152 * parseFloat(parts[1]) + 0.0722 * parseFloat(parts[2])) < 128
+  }
+  return false
+}
+
+function mirrorTheme () {
+  try {
+    if (!window.parent || window.parent === window) return
+    var root = window.parent.document.documentElement
+    var cs = window.parent.getComputedStyle(root)
+    // DSH Desktop reserves the top strip for the native window drag region; its
+    // no-drag opt-out is a CSS rule in the parent document, so it cannot reach
+    // inside this frame. Keep every control below that strip instead.
+    var inset = cs.getPropertyValue('--dsh-titlebar-safe-inset-top')
+    // When the client half carves the strip out of the window drag region it
+    // appends ?shielded=1, and the panel may then use the full height.
+    var shielded = String(location.search || '').indexOf('shielded=1') >= 0
+    document.documentElement.style.setProperty('--tb-inset-top', shielded ? '0px' : ((inset && inset.trim()) || '0px'))
+    // Only the caption buttons need clearance; read their width, not the strip height.
+    var insetRight = cs.getPropertyValue('--dsh-titlebar-safe-inset-right')
+    document.documentElement.style.setProperty('--tb-inset-right', (insetRight && insetRight.trim()) || '0px')
+    var names = [
+      '--dsw-alias-bg-base', '--dsw-alias-bg-layer-1', '--dsw-alias-bg-layer-2',
+      '--dsw-alias-border-l1', '--dsw-alias-border-l2', '--dsw-alias-label-primary',
+      '--dsw-alias-label-secondary', '--dsw-alias-brand-primary',
+      '--dsw-alias-state-success-primary', '--dsw-alias-state-error-primary',
+      '--dsw-specific-sidebar-fill',
+    ]
+    var map = {
+      '--dsw-alias-bg-base': '--tb-bg',
+      '--dsw-alias-bg-layer-1': '--tb-bg-1',
+      '--dsw-alias-bg-layer-2': '--tb-bg-2',
+      '--dsw-alias-border-l1': '--tb-border',
+      '--dsw-alias-border-l2': '--tb-border-strong',
+      '--dsw-alias-label-primary': '--tb-text',
+      '--dsw-alias-label-secondary': '--tb-text-dim',
+      '--dsw-alias-brand-primary': '--tb-accent',
+      '--dsw-alias-state-success-primary': '--tb-ok',
+      '--dsw-alias-state-error-primary': '--tb-err',
+    }
+    for (var i = 0; i < names.length; i++) {
+      var value = cs.getPropertyValue(names[i])
+      if (!value || !value.trim()) continue
+      document.documentElement.style.setProperty(names[i], value.trim())
+      if (map[names[i]]) document.documentElement.style.setProperty(map[names[i]], value.trim())
+    }
+    var probed = document.documentElement.style.getPropertyValue('--tb-bg')
+    var dark = probed
+      ? isDarkColor(probed)
+      : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    document.documentElement.classList.toggle('tb-dark', dark)
+  } catch (error) { /* cross-origin or no parent: keep the built-in palette */ }
+}
+
+// ------------------------------------------------------------ 分类规则
+
+state.rules = state.rules || []
+state.ruleDraft = null
+state.ruleLog = ''
+
+function ruleBlank () {
+  return {
+    id: 'r' + Date.now().toString(36) + Math.floor(Math.random() * 1000).toString(36),
+    name: '',
+    enabled: true,
+    continue: false,
+    match: { from: '', subject: '', to: '', folderId: '', unreadOnly: false },
+    actions: { markRead: null, flag: null, junk: null, tag: '', moveTo: '', delete: false },
+  }
+}
+
+function describeRule (match) {
+  var m = match || {}
+  var bits = []
+  if (m.from) bits.push('发件人含「' + m.from + '」')
+  if (m.subject) bits.push('主题含「' + m.subject + '」')
+  if (m.to) bits.push('收件人含「' + m.to + '」')
+  if (m.folderId) bits.push('仅指定文件夹')
+  if (m.unreadOnly) bits.push('仅未读')
+  return bits.length ? bits.join(' 且 ') : '任意邮件'
+}
+
+function describeRuleActions (actions) {
+  var a = actions || {}
+  var bits = []
+  if (a.markRead === true) bits.push('标为已读')
+  if (a.flag === true) bits.push('加星标')
+  if (a.junk === true) bits.push('标为垃圾')
+  if (a.tag) bits.push('加标签 ' + a.tag)
+  if (a.moveTo) {
+    var folder = null
+    for (var i = 0; i < state.folders.length; i++) if (state.folders[i].id === a.moveTo) folder = state.folders[i]
+    bits.push('移动到 ' + (folder ? folderLabel(folder) : a.moveTo))
+  }
+  if (a.delete === true) bits.push('删除')
+  return bits.length ? bits.join('、') : '未设置动作'
+}
+
+function ruleInput (value, placeholder, onInput, width) {
+  var el = document.createElement('input')
+  el.className = 'input'
+  el.value = value || ''
+  el.placeholder = placeholder || ''
+  if (width) el.style.maxWidth = width
+  el.oninput = function () { onInput(el.value) }
+  return el
+}
+
+function ruleCheck (label, checked, onChange) {
+  var wrap = document.createElement('label')
+  wrap.style.display = 'inline-flex'
+  wrap.style.alignItems = 'center'
+  wrap.style.gap = '4px'
+  var box = document.createElement('input')
+  box.type = 'checkbox'
+  box.checked = !!checked
+  box.onchange = function () { onChange(box.checked) }
+  wrap.appendChild(box)
+  wrap.appendChild(document.createTextNode(label))
+  return wrap
+}
+
+function ruleFolderSelect (value, onChange, emptyLabel) {
+  var sel = document.createElement('select')
+  var none = document.createElement('option')
+  none.value = ''
+  none.textContent = emptyLabel || '（不限）'
+  sel.appendChild(none)
+  for (var i = 0; i < state.folders.length; i++) {
+    var opt = document.createElement('option')
+    opt.value = state.folders[i].id
+    opt.textContent = folderLabel(state.folders[i])
+    if (String(value) === String(state.folders[i].id)) opt.selected = true
+    sel.appendChild(opt)
+  }
+  sel.onchange = function () { onChange(sel.value) }
+  return sel
+}
+
+function ruleRow (label, control) {
+  var row = document.createElement('div')
+  row.className = 'crow'
+  var tag = document.createElement('label')
+  tag.textContent = label
+  row.appendChild(tag)
+  row.appendChild(control)
+  return row
+}
+
+function renderRulesBody () {
+  var host = $('rules-body')
+  if (!host) return
+  host.innerHTML = ''
+  var count = $('rules-count')
+  if (count) count.textContent = state.rules.length ? state.rules.length + ' 条 · Thunderbird 后台执行' : ''
+
+  if (state.ruleDraft) {
+    var d = state.ruleDraft
+    var form = document.createElement('div')
+    form.className = 'rform'
+    form.appendChild(ruleRow('名称', ruleInput(d.name, '例如：账单发票归档', function (v) { d.name = v })))
+    form.appendChild(ruleRow('发件人含', ruleInput(d.match.from, '域名或地址片段，如 supplier.com', function (v) { d.match.from = v })))
+    form.appendChild(ruleRow('主题含', ruleInput(d.match.subject, '如 发票 / invoice / PF', function (v) { d.match.subject = v })))
+    form.appendChild(ruleRow('收件人含', ruleInput(d.match.to, '留空表示不限', function (v) { d.match.to = v })))
+    form.appendChild(ruleRow('限定文件夹', ruleFolderSelect(d.match.folderId, function (v) { d.match.folderId = v }, '（全部文件夹）')))
+    var actRow = document.createElement('div')
+    actRow.className = 'crow'
+    actRow.style.flexWrap = 'wrap'
+    var actLabel = document.createElement('label')
+    actLabel.textContent = '动作'
+    actRow.appendChild(actLabel)
+    actRow.appendChild(ruleCheck('标为已读', d.actions.markRead === true, function (v) { d.actions.markRead = v ? true : null }))
+    actRow.appendChild(ruleCheck('加星标', d.actions.flag === true, function (v) { d.actions.flag = v ? true : null }))
+    actRow.appendChild(ruleCheck('标为垃圾', d.actions.junk === true, function (v) { d.actions.junk = v ? true : null }))
+    actRow.appendChild(ruleCheck('删除', d.actions.delete === true, function (v) { d.actions.delete = v }))
+    form.appendChild(actRow)
+    var tagRow = document.createElement('div')
+    tagRow.className = 'crow'
+    tagRow.style.flexWrap = 'wrap'
+    var tagLabel = document.createElement('label')
+    tagLabel.textContent = '更多'
+    tagRow.appendChild(tagLabel)
+    tagRow.appendChild(ruleInput(d.actions.tag, '标签 key（可选）', function (v) { d.actions.tag = v }, '150px'))
+    tagRow.appendChild(ruleFolderSelect(d.actions.moveTo, function (v) { d.actions.moveTo = v }, '（不移动）'))
+    form.appendChild(tagRow)
+    form.appendChild(ruleCheck('命中后继续匹配后续规则', d.continue === true, function (v) { d.continue = v }))
+    var bar = document.createElement('div')
+    bar.className = 'crow'
+    var save = document.createElement('button')
+    save.className = 'btn primary'
+    save.textContent = '保存规则'
+    save.onclick = saveRuleDraft
+    var cancel = document.createElement('button')
+    cancel.className = 'btn'
+    cancel.textContent = '取消'
+    cancel.onclick = function () { state.ruleDraft = null; renderRulesBody() }
+    bar.appendChild(save)
+    bar.appendChild(cancel)
+    form.appendChild(bar)
+    host.appendChild(form)
+  }
+
+  if (!state.rules.length) {
+    var empty = document.createElement('div')
+    empty.className = 'empty'
+    empty.style.padding = '18px 0'
+    empty.textContent = '还没有规则。规则在 Thunderbird 后台页执行——新邮件一到就自动分类，DSH 关着也生效。'
+    host.appendChild(empty)
+  }
+  for (var i = 0; i < state.rules.length; i++) {
+    ;(function (rule) {
+      var row = document.createElement('div')
+      row.className = 'rrow' + (rule.enabled === false ? ' disabled' : '')
+      var box = document.createElement('input')
+      box.type = 'checkbox'
+      box.checked = rule.enabled !== false
+      box.onchange = function () { rule.enabled = box.checked; saveRules() }
+      row.appendChild(box)
+      var main = document.createElement('div')
+      main.className = 'rrow-main'
+      var name = document.createElement('div')
+      name.className = 'rrow-name'
+      name.textContent = rule.name || '(未命名规则)'
+      var desc = document.createElement('div')
+      desc.className = 'rrow-desc'
+      desc.textContent = describeRule(rule.match) + ' → ' + describeRuleActions(rule.actions)
+      main.appendChild(name)
+      main.appendChild(desc)
+      row.appendChild(main)
+      var edit = document.createElement('button')
+      edit.className = 'btn'
+      edit.textContent = '编辑'
+      edit.onclick = function () { state.ruleDraft = JSON.parse(JSON.stringify(rule)); renderRulesBody() }
+      var del = document.createElement('button')
+      del.className = 'btn'
+      del.textContent = '删除'
+      del.onclick = function () {
+        state.rules = state.rules.filter(function (x) { return x.id !== rule.id })
+        saveRules()
+      }
+      row.appendChild(edit)
+      row.appendChild(del)
+      host.appendChild(row)
+    })(state.rules[i])
+  }
+
+  if (state.ruleLog) {
+    var log = document.createElement('div')
+    log.className = 'rlog'
+    log.innerHTML = renderRich(state.ruleLog)
+    host.appendChild(log)
+  }
+}
+
+function loadRules () {
+  return call('rules.get', {}, 20000).then(function (out) {
+    state.rules = (out && out.rules) || []
+    renderRulesBody()
+    return state.rules
+  }).catch(function (error) {
+    setError('读取规则失败：' + String((error && error.message) || error))
+  })
+}
+
+function saveRules () {
+  return call('rules.set', { rules: state.rules }, 20000).then(function () {
+    state.ruleDraft = null
+    setNotice('规则已保存（' + state.rules.length + ' 条），在 Thunderbird 后台立即生效')
+    renderRulesBody()
+  }).catch(function (error) {
+    setError('保存规则失败：' + String((error && error.message) || error))
+  })
+}
+
+function saveRuleDraft () {
+  if (!state.ruleDraft) return
+  if (!String(state.ruleDraft.name || '').trim()) { setError('给规则起个名字'); return }
+  var m = state.ruleDraft.match
+  if (!m.from && !m.subject && !m.to) { setError('至少填一个匹配条件（发件人/主题/收件人）'); return }
+  var a = state.ruleDraft.actions
+  if (!a.markRead && !a.flag && !a.junk && !a.tag && !a.moveTo && !a.delete) { setError('至少选一个动作'); return }
+  var at = -1
+  for (var i = 0; i < state.rules.length; i++) if (state.rules[i].id === state.ruleDraft.id) at = i
+  if (at >= 0) state.rules[at] = state.ruleDraft
+  else state.rules.push(state.ruleDraft)
+  saveRules()
+}
+
+function runRulesNow (dryRun) {
+  if (!state.folderId) { setError('先选一个文件夹'); return }
+  state.ruleLog = dryRun ? '试运行中…' : '执行中…'
+  renderRulesBody()
+  call('rules.run', { folderId: state.folderId, limit: 60, dryRun: !!dryRun }, 180000).then(function (out) {
+    var lines = ['扫描 ' + out.scanned + ' 封，命中 ' + out.matched + ' 条' + (out.dryRun ? '（试运行，不改动邮件）' : '')]
+    for (var i = 0; i < (out.results || []).length; i++) {
+      var r = out.results[i]
+      lines.push('· ' + r.ruleName + ' → ' + (r.applied.length ? r.applied.join('+') : '无动作') + ' ｜ ' + (r.subject || '(无主题)'))
+    }
+    if (!out.results || !out.results.length) lines.push('（当前文件夹没有邮件命中规则）')
+    state.ruleLog = lines.join('\n')
+    renderRulesBody()
+    if (!dryRun && out.matched > 0) loadMessages()
+  }).catch(function (error) {
+    state.ruleLog = '执行失败：' + String((error && error.message) || error)
+    renderRulesBody()
+  })
+}
+
+function openRules () {
+  $('rules').hidden = false
+  $('ai').hidden = true
+  if (!state.rules.length) loadRules()
+  else renderRulesBody()
+}
+
+function ruleFromCurrent () {
+  if (!state.current) { setError('先打开一封邮件'); return }
+  var author = emailOf(state.current.author)
+  var at = author.indexOf('@')
+  var draft = ruleBlank()
+  draft.name = String(state.current.subject || '新规则').slice(0, 24)
+  draft.match.from = at > 0 ? author.slice(at + 1) : author
+  state.ruleDraft = draft
+  $('rules').hidden = false
+  if (!state.rules.length) loadRules().then(renderRulesBody)
+  else renderRulesBody()
+  setNotice('已按当前邮件预填匹配条件，选好动作后保存')
+}
+
+function aiClassifyCurrent () {
+  var text = bodyTextForAi()
+  if (!text) { setError('这封邮件没有可用正文，无法分类'); return }
+  state.ai.open = true
+  state.ai.busy = true
+  state.ai.error = ''
+  state.ai.text = ''
+  state.ai.model = ''
+  state.ai.ask = null
+  state.ai.title = 'AI 分类建议'
+  renderAi()
+  var categories = state.rules.map(function (r) { return r.name }).filter(Boolean).join('、')
+  fetch('/api/thunderbird/ai', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      action: 'classify',
+      text: text,
+      subject: state.current ? state.current.subject : '',
+      from: state.current ? state.current.author : '',
+      instruction: categories,
+      maxTokens: 3000,
+    }),
+  }).then(function (res) { return res.json() }).then(function (out) {
+    state.ai.busy = false
+    if (!out || out.ok !== true) { state.ai.error = (out && out.error) || 'AI 调用失败'; renderAi(); return }
+    if (!out.text) { state.ai.error = '模型没有返回内容（多半是 token 预算不足），再点一次试试'; renderAi(); return }
+    var parsed = null
+    try { parsed = JSON.parse(String(out.text).replace(/```json|```/g, '').trim()) } catch (error) { parsed = null }
+    state.ai.model = out.model || ''
+    state.ai.text = parsed
+      ? ('**分类：' + (parsed.category || '未分类') + '**（置信度 ' + (parsed.confidence === undefined ? '-' : parsed.confidence) + '）\n建议动作：' + ((parsed.actions || []).join('、') || '无') + '\n理由：' + (parsed.reason || '-') + '\n\n点上方「填入回复」会用这段结果覆盖撰写区；要建规则请用邮件操作栏的「用这封建规则」。')
+      : out.text
+    renderAi()
+  }).catch(function (error) {
+    state.ai.busy = false
+    state.ai.error = String((error && error.message) || error)
+    renderAi()
+  })
+}
+
+$('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
+$('btn-search').onclick = runSearch
+$('search').addEventListener('keydown', function (event) { if (event.key === 'Enter') runSearch() })
+$('btn-compose').onclick = function () { startCompose(null) }
+$('btn-cancel').onclick = function () { $('compose').hidden = true }
+$('btn-send').onclick = sendMail
+$('btn-ai-draft').onclick = function () {
+  $('compose').hidden = false
+  openAsk('draft', bodyTextForAi(), '想写什么？（例如：催一下上个月的发票，语气客气）', 'AI 代写')
+}
+$('btn-rules').onclick = function () { if ($('rules').hidden) openRules(); else $('rules').hidden = true }
+$('btn-group').onclick = function () {
+  state.group = !state.group
+  this.classList.toggle('primary', state.group)
+  renderList()
+}
+if (state.group === undefined || state.group) $('btn-group').classList.add('primary')
+
+// Infinite scroll: page in the next chunk when the list nears its end.
+$('list').addEventListener('scroll', function () {
+  var el = $('list')
+  if (state.loadingMore) return
+  if (state.total && state.messages.length >= state.total) return
+  if (state.messages.length < (state.limit || 200)) return
+  if (el.scrollTop + el.clientHeight < el.scrollHeight - 240) return
+  state.loadingMore = true
+  state.limit = (state.limit || 200) + 200
+  loadMessages(true).then(function () { state.loadingMore = false })
+})
+$('rules-close').onclick = function () { $('rules').hidden = true }
+$('rules-new').onclick = function () { state.ruleDraft = ruleBlank(); renderRulesBody() }
+$('rules-test').onclick = function () { runRulesNow(true) }
+$('rules-run').onclick = function () { runRulesNow(false) }
+
+$('btn-ai-sum').onclick = aiSummarizeSelection
+$('btn-ai-ask').onclick = aiAskSelection
+$('ai-close').onclick = function () { state.ai.open = false; renderAi() }
+$('ai-copy').onclick = aiCopy
+$('ai-reply').onclick = aiIntoReply
+$('ai-new').onclick = function () {
+  var text = state.ai.text
+  if (!text) return
+  var subject = ''
+  if (/^\s*主题[:：]/.test(text)) {
+    var lines = text.split('\n')
+    subject = lines[0].replace(/^\s*主题[:：]\s*/, '').trim()
+    text = lines.slice(1).join('\n').replace(/^\s*\n/, '')
+  }
+  startCompose(null)
+  $('c-subject').value = subject
+  $('c-body').value = text + '\n'
+  setNotice('已填入新邮件，填好收件人后发送')
+}
+$('ai-lang').onchange = function () { setNotice('翻译目标语言：' + this.value) }
+$('ai-send').onclick = aiSendQuestion
+$('ai-question').addEventListener('keydown', function (event) { if (event.key === 'Enter') aiSendQuestion() })
+$('reader').addEventListener('mouseup', onReaderUp)
+$('selmenu').addEventListener('mousedown', function (event) { event.preventDefault() })
+$('selmenu').addEventListener('click', onSelMenuClick)
+document.addEventListener('mousedown', function (event) {
+  var menu = $('selmenu')
+  if (!menu.hidden && !menu.contains(event.target)) hideSelMenu()
+})
+
+// ---- column resizing --------------------------------------------------------
+// Widths live in localStorage so a resized layout survives panel reloads.
+var COL_KEY = 'dsh-tb-cols'
+
+function readCols () {
+  try { return JSON.parse(localStorage.getItem(COL_KEY) || '{}') } catch (error) { return {} }
+}
+
+function writeCol (id, width) {
+  try {
+    var saved = readCols()
+    if (width === null) delete saved[id]
+    else saved[id] = Math.round(width)
+    localStorage.setItem(COL_KEY, JSON.stringify(saved))
+  } catch (error) { /* storage is optional */ }
+}
+
+function restoreWidths () {
+  var saved = readCols()
+  if (saved.folders) { $('folders').style.width = saved.folders + 'px'; $('folders').style.minWidth = saved.folders + 'px' }
+  if (saved.list) { $('list').style.width = saved.list + 'px'; $('list').style.minWidth = saved.list + 'px' }
+}
+
+function wireSplitter (handleId, columnId) {
+  var handle = $(handleId)
+  var column = $(columnId)
+  if (!handle || !column) return
+  handle.addEventListener('mousedown', function (event) {
+    event.preventDefault()
+    var startX = event.clientX
+    var startWidth = column.getBoundingClientRect().width
+    handle.classList.add('dragging')
+    document.body.style.cursor = 'col-resize'
+    var move = function (moveEvent) {
+      var next = Math.max(150, Math.min(startWidth + (moveEvent.clientX - startX), 640))
+      column.style.width = next + 'px'
+      column.style.minWidth = next + 'px'
+    }
+    var up = function () {
+      handle.classList.remove('dragging')
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', move)
+      document.removeEventListener('mouseup', up)
+      writeCol(columnId, column.getBoundingClientRect().width)
+    }
+    document.addEventListener('mousemove', move)
+    document.addEventListener('mouseup', up)
+  })
+  // Double-click restores that column's default width.
+  handle.addEventListener('dblclick', function () {
+    column.style.width = ''
+    column.style.minWidth = ''
+    writeCol(columnId, null)
+  })
+}
+
+restoreWidths()
+wireSplitter('split-a', 'folders')
+wireSplitter('split-b', 'list')
+
+mirrorTheme()
+render()
+pollStatus()
+setInterval(mirrorTheme, 4000)
+setInterval(pollStatus, 5000)
+setInterval(pollEvents, 8000)
+</script>
+</body>
+</html>

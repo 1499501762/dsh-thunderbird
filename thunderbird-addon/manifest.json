@@ -1,0 +1,33 @@
+{
+  "manifest_version": 2,
+  "name": "DSH Thunderbird Bridge",
+  "version": "1.0.0",
+  "description": "Exposes Thunderbird mail APIs to the DSH sidebar over a loopback HTTP bridge.",
+  "applications": {
+    "gecko": {
+      "id": "dsh-thunderbird-bridge@dsh.local",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "messagesRead",
+    "messagesDelete",
+    "messagesMove",
+    "messagesUpdate",
+    "messagesModifyPermanent",
+    "accountsRead",
+    "compose",
+    "addressBooks",
+    "storage",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "scripts": ["background.js", "rules.js"],
+    "persistent": true
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}

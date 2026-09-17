@@ -1,0 +1,21 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.xpi
+
+# Local install artifacts
+*.bak
+*.bak-*
+cordis.patch.yml.bak*
+
+# Screenshots in docs/ are captured from a REAL mailbox (subjects, senders,
+# invoice numbers, the account address in the window title). They stay local.
+docs/

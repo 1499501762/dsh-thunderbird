@@ -1,0 +1,12 @@
+# dsh-thunderbird bundle patch: inserts the plugin row into the web profile roster.
+#
+# The row name resolves through the profile's node_modules, so this package must
+# be linked in first (see "持久化安装" in README.md):
+#   profiles/web/package.json  ->  dependencies: { "dsh-thunderbird": "link:<this dir>" }
+#                               ->  dsh.profile.bundles: [ ... "dsh-thunderbird" ]
+#
+# The host half (dsh-side/thunderbird-host.mjs) owns /api/thunderbird/*; the
+# client half (dsh-side/panel-client.js) injects the sidebar entry + docked panel.
+- insert:
+    - id: dsh-thunderbird
+      name: 'dsh-thunderbird'

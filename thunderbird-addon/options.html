@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>DSH Thunderbird Bridge</title>
+  <style>
+    body { font: 13px/1.6 system-ui, sans-serif; margin: 24px; max-width: 560px; color: #1c1c1e; }
+    h1 { font-size: 16px; margin: 0 0 16px; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input { width: 100%; padding: 6px 8px; box-sizing: border-box; font: inherit; }
+    .hint { color: #6b6b70; margin: 4px 0 0; }
+    .row { margin-top: 20px; display: flex; gap: 8px; align-items: center; }
+    button { padding: 6px 14px; font: inherit; cursor: pointer; }
+    #result { margin-top: 14px; padding: 10px; border-radius: 6px; background: #f2f2f7; white-space: pre-wrap; }
+    #result.ok { background: #e6f6ea; }
+    #result.bad { background: #fdeaea; }
+  </style>
+</head>
+<body>
+  <h1>DSH Thunderbird Bridge</h1>
+  <label for="baseUrl">DSH 地址</label>
+  <input id="baseUrl" type="text" placeholder="http://127.0.0.1:43129">
+  <p class="hint">DSH Web GUI 的地址（浏览器地址栏里的那个）。</p>
+
+  <label for="pollWaitMs">长轮询等待（毫秒）</label>
+  <input id="pollWaitMs" type="number" min="1000" max="25000">
+  <p class="hint">一次挂起多久等命令。默认 25000。</p>
+
+  <label for="retryMs">断线重试间隔（毫秒）</label>
+  <input id="retryMs" type="number" min="500" max="60000">
+  <p class="hint">连不上 DSH 时的重试间隔。默认 3000。</p>
+
+  <div class="row">
+    <button id="save">保存</button>
+    <button id="test">测试连接</button>
+  </div>
+  <div id="result" hidden></div>
+
+  <script src="options.js"></script>
+</body>
+</html>
