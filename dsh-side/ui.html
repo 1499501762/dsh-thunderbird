@@ -624,6 +624,15 @@
     <button class="btn primary" id="btn-compose">写邮件</button>
   </div>
 
+  <div class="searchbar" id="searchbar" hidden>
+    <label>主题<input class="input" id="q-subject" placeholder="主题包含…"></label>
+    <label>发件人<input class="input" id="q-author" placeholder="发件人包含…"></label>
+    <label>正文<input class="input" id="q-body" placeholder="正文包含…"></label>
+    <button class="btn primary" id="q-run">搜索</button>
+    <button class="btn" id="q-clear">清除</button>
+    <span class="meta" id="q-note"></span>
+  </div>
+
   <div class="toast err" id="toast-err" hidden></div>
   <div class="toast ok" id="toast-ok" hidden></div>
 
@@ -1776,15 +1785,54 @@ function removeCurrent () {
   }).catch(function (error) { setError(error.message) })
 }
 
+// Search. The single box is a "somewhere in the mail" search; the toolbar turns
+// the three predicates Thunderbird actually supports into three fields. They are
+// ANDed, so filling two is a narrower question, not a union.
+function searchParams () {
+  var params = { limit: 80 }
+  var box = $('search').value.trim()
+  var subject = $('q-subject').value.trim()
+  var author = $('q-author').value.trim()
+  var body = $('q-body').value.trim()
+  if (subject) params.subject = subject
+  if (author) params.author = author
+  if (body) params.fullText = body
+  // Nothing in the toolbar: fall back to the plain-text path (subject + sender +
+  // body merged), which is what a single word in the top box means.
+  if (!subject && !author && !body) {
+    if (!box) return null
+    params.text = box
+  } else if (box && !subject) {
+    params.subject = box
+  }
+  return params
+}
+
+function describeSearch (params) {
+  var parts = []
+  if (params.subject) parts.push('主题「' + params.subject + '」')
+  if (params.author) parts.push('发件人「' + params.author + '」')
+  if (params.fullText) parts.push('正文「' + params.fullText + '」')
+  if (params.text) parts.push('「' + params.text + '」')
+  return parts.join(' + ') || '（空）'
+}
+
 function runSearch () {
-  var text = $('search').value.trim()
-  if (!text) { loadMessages(); return }
-  call('messages.search', { text: text, limit: 80 }).then(function (page) {
+  if ($('searchbar').hidden) { $('searchbar').hidden = false; $('q-subject').focus(); return }
+  var params = searchParams()
+  if (params === null) { $('searchbar').hidden = true; loadMessages(); return }
+  $('q-note').textContent = '搜索中…'
+  call('messages.search', params, 180000).then(function (page) {
     state.messages = (page && page.messages) || []
-    setNotice('搜索「' + text + '」，命中 ' + state.messages.length + ' 封')
+    var strategies = (page && page.strategies) || []
+    $('q-note').textContent = '命中 ' + state.messages.length + ' 封' + (strategies.length ? '（' + strategies.join(' ') + '）' : '')
+    setNotice('搜索 ' + describeSearch(params) + '，命中 ' + state.messages.length + ' 封')
     setError('')
     render()
-  }).catch(function (error) { setError(error.message) })
+  }).catch(function (error) {
+    $('q-note').textContent = ''
+    setError(error.message)
+  })
 }
 
 function startCompose (message) {
@@ -3398,7 +3446,46 @@ function restoreUiState () {
 restoreUiState()
 
 $('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
+// The toolbar's own style lives here rather than in the sheet because it is one
+// feature's chrome and the sheet is already long.
+;(function () {
+  var style = document.createElement('style')
+  style.textContent = [
+    '.searchbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px;',
+    'background:var(--tb-glass-1);backdrop-filter:var(--tb-glass-blur);-webkit-backdrop-filter:var(--tb-glass-blur);',
+    'border-bottom:1px solid var(--tb-glass-line)}',
+    '.searchbar label{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--tb-text-dim)}',
+    '.searchbar .input{width:150px}',
+    '.searchbar #q-note{margin-left:auto}',
+  ].join('')
+  document.head.appendChild(style)
+})()
+
 $('btn-search').onclick = runSearch
+$('q-run').onclick = runSearch
+$('q-clear').onclick = function () {
+  $('q-subject').value = ''
+  $('q-author').value = ''
+  $('q-body').value = ''
+  $('q-note').textContent = ''
+  loadMessages()
+}
+// Enter in the quick box searches right away; the toolbar is for predicates, so
+// it should not be a detour you have to take to search one word.
+$('search').addEventListener('keydown', function (event) {
+  if (event.key !== 'Enter') return
+  var text = $('search').value.trim()
+  if (!text) return
+  event.preventDefault()
+  $('q-note').textContent = '搜索中…'
+  call('messages.search', { text: text, limit: 80 }, 180000).then(function (page) {
+    state.messages = (page && page.messages) || []
+    $('q-note').textContent = '命中 ' + state.messages.length + ' 封'
+    setNotice('搜索「' + text + '」，命中 ' + state.messages.length + ' 封')
+    setError('')
+    render()
+  }).catch(function (error) { $('q-note').textContent = ''; setError(error.message) })
+})
 $('search').addEventListener('keydown', function (event) { if (event.key === 'Enter') runSearch() })
 
 // Mail images keep whatever layout their sender chose; the single global switch

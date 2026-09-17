@@ -61,7 +61,19 @@ function setStatus (next) {
 
 function normIdentity (i) {
   if (!i) return null
-  return { id: box(i.id), name: box(i.name), email: box(i.email), replyTo: box(i.replyTo) }
+  return {
+    id: box(i.id),
+    name: box(i.name),
+    email: box(i.email),
+    replyTo: box(i.replyTo),
+    organization: box(i.organization),
+    // The identity's own signature as Thunderbird stores it, plus which flavour
+    // it is. Both come back empty when this Thunderbird build does not expose
+    // them under the granted permissions, in which case the panel falls back to
+    // its own per-account signature library.
+    signature: box(i.signature),
+    signatureIsHTML: i.signatureIsHTML === true,
+  }
 }
 
 function normFolder (f, depth) {
@@ -417,11 +429,36 @@ methods['mail.open'] = async (params) => {
 // global index, which may still be building), so run the cheap header matches
 // too and merge the hits.
 methods['messages.search'] = async (params) => {
-  const text = box(params.text).trim()
-  if (!text) return { messages: [], strategies: [] }
+  // Field-specific search: subject / author / fullText are PREDICATES, and
+  // messages.query ANDs them, so asking for two fields is one query — not the
+  // three merged strategies the plain-text path needs. `text` stays supported
+  // for the callers that only have a blob to search for.
+  const subject = box(params.subject).trim()
+  const author = box(params.author).trim()
+  const fullText = box(params.fullText !== undefined && params.fullText !== null ? params.fullText : params.text).trim()
+  if (!subject && !author && !fullText) return { messages: [], strategies: [] }
   const limit = Math.max(1, Math.min(Number(params.limit) || 60, 300))
   const base = { messagesPerPage: Math.min(limit * 3, 500), autoPaginationTimeout: 0 }
   if (params.folderId) base.folderId = box(params.folderId)
+
+  const predicates = []
+  if (subject) predicates.push(['subject', subject])
+  if (author) predicates.push(['author', author])
+  if (fullText) predicates.push(['fullText', fullText])
+
+  // The plain-text path (no explicit field, or fullText alone) keeps the merged
+  // strategies: a bare word may live in the subject, the sender or the body.
+  if (subject || author) {
+    const info = Object.assign({}, base)
+    for (let i = 0; i < predicates.length; i++) info[predicates[i][0]] = predicates[i][1]
+    try {
+      const page = messageListFrom(await api.messages.query(info))
+      const messages = page.messages.map(normHeader).sort((a, b) => (b.date || 0) - (a.date || 0))
+      return { messages: messages.slice(0, limit), strategies: [predicates.map((p) => p[0]).join('+') + ':' + messages.length] }
+    } catch (error) {
+      return { messages: [], strategies: ['query:err:' + String((error && error.message) || error)] }
+    }
+  }
 
   const attempts = ['subject', 'author', 'fullText']
   const collected = []
@@ -430,7 +467,7 @@ methods['messages.search'] = async (params) => {
   for (let i = 0; i < attempts.length; i++) {
     const field = attempts[i]
     const info = Object.assign({}, base)
-    info[field] = text
+    info[field] = fullText
     try {
       const page = messageListFrom(await api.messages.query(info))
       strategies.push(field + ':' + page.messages.length)
