@@ -544,6 +544,52 @@
   /* Reply/new-mail write into the panel's composer, which is in another tab. */
   html.ai-view #ai-reply,
   html.ai-view #ai-new { display: none !important; }
+
+  /* ---------- unread threads, judged by the newest message ---------- */
+  .thread-head.unread { box-shadow: inset 3px 0 0 var(--tb-accent); }
+  .thread-head.unread .thread-subject { color: var(--tb-text); font-weight: 700; }
+  .thread-head.unread .thread-count {
+    color: var(--tb-accent);
+    border-color: color-mix(in srgb, var(--tb-accent) 42%, transparent);
+  }
+
+  /* ---------- compose as a floating window ---------- */
+  .compose {
+    position: fixed;
+    left: 50%;
+    bottom: 26px;
+    transform: translateX(-50%);
+    width: min(900px, calc(100vw - 56px));
+    max-height: min(76vh, 760px);
+    overflow: auto;
+    z-index: 90;
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 16px;
+    padding: 18px 20px 20px;
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    box-shadow: 0 28px 80px rgba(0, 0, 0, .5);
+  }
+  .compose .crow > label { width: 56px; font-size: 12.5px; }
+  .compose .input { border-radius: 10px; padding: 8px 12px; }
+  .compose textarea.textarea { min-height: 260px; border-radius: 12px; padding: 12px; font-size: 13.5px; line-height: 1.7; }
+
+  /* ---------- glass on the surfaces that were still solid ----------
+     The column alphas drop as well: at 72% the blur had almost nothing to work
+     with, which is why "glass" only ever read on the two bars. */
+  :root {
+    --tb-glass: color-mix(in srgb, var(--tb-bg) 64%, transparent);
+    --tb-glass-1: color-mix(in srgb, var(--tb-bg-1) 66%, transparent);
+    --tb-glass-2: color-mix(in srgb, var(--tb-bg-2) 64%, transparent);
+  }
+  .toast, .att-chip, .thread-count, .chip, .code, .progress, .chat-msg.user, .selmenu button:hover {
+    backdrop-filter: var(--tb-glass-blur);
+    -webkit-backdrop-filter: var(--tb-glass-blur);
+  }
+  .toast, .att-chip, .thread-count, .chip { background: var(--tb-glass-2); border-color: var(--tb-glass-line); }
+  .hint, .empty, .rrow, .rform { background: transparent; }
+  .rform .crow select, .rform .crow input { background: color-mix(in srgb, var(--tb-bg) 76%, transparent); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -873,6 +919,7 @@ function renderFolders () {
         return function (event) {
           event.stopPropagation()
           state.collapsed[id] = !state.collapsed[id]
+          saveCollapsed()
           renderFolders()
         }
       })(folder.id)
@@ -968,7 +1015,10 @@ function renderList () {
     if (rows[i].kind === 'thread') {
       var group = rows[i]
       var head = document.createElement('div')
-      head.className = 'thread-head'
+      // A thread reads as unread when its NEWEST message is unread: that is the
+      // one the user would see first, and it is what the count already reports.
+      var newest = group.messages.length ? group.messages[0] : null
+      head.className = 'thread-head' + (newest && !newest.read ? ' unread' : '')
       var caret = document.createElement('span')
       caret.className = 'folder-caret'
       caret.textContent = state.expanded[group.key] ? '▾' : '▸'
@@ -1386,8 +1436,12 @@ function whiteTile (img, mode) {
   // the white outright leaves the ink still mixed with white, so the outline keeps
   // a pale rim and reads as chewed. Give the edge a SOFT alpha instead, then solve
   // every affected pixel back for the ink it was covering.
-  var T_SOLID = 0.78
-  var T_CLEAR = 0.97
+  // Colours are never invented here: the white goes, everything else stays as
+  // sent. The ramp is deliberately narrow and high, because a wide one re-solves
+  // mid-tone pixels toward black — and JPEG noise spreads "slightly light" over
+  // large areas, which is what turned white-backed JPEGs into dark mush.
+  var T_SOLID = 0.88
+  var T_CLEAR = 0.985
   var lumaAt = function (i) {
     return (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255
   }
@@ -1439,36 +1493,17 @@ function whiteTile (img, mode) {
     if (ea < 1) unmix(ei, ea)
   }
 
-  var flip
-  if (mode === 'keyflip') flip = true
-  else if (mode === 'key') flip = false
-  else {
-    // Mostly dark ink that no longer touches the edges: it was drawn for a light
-    // page and would vanish here. Artwork that still runs edge to edge is a
-    // designed panel, so its colours are kept as sent.
-    flip = (dark / opaque) > 0.5 && (ringOpaque / Math.max(1, ring)) < 0.1
-  }
-
   ctx.putImageData(frame, 0, 0)
-  var out = canvas
-  if (flip) {
-    out = document.createElement('canvas')
-    out.width = w
-    out.height = h
-    var ctx2 = out.getContext('2d')
-    ctx2.filter = 'invert(1) hue-rotate(180deg)'
-    ctx2.drawImage(canvas, 0, 0)
-  }
   try {
-    img.src = out.toDataURL('image/png')
+    img.src = canvas.toDataURL('image/png')
     return true
   } catch (error) { return false }
 }
 
-// Per-image override, keyed by the address the mail carried so it survives a
-// re-render. Clicking a picture in the reader cycles it.
-var IMAGE_MODES = ['auto', 'key', 'keyflip', 'keep']
-var IMAGE_MODE_LABELS = { auto: '自动', key: '只去白底', keyflip: '去白底+翻色', keep: '原样' }
+// Two states only. Colour is no longer invented, so a menu that offered "flip
+// the lightness" was offering a choice between two colour guesses.
+var IMAGE_MODES = ['auto', 'keep']
+var IMAGE_MODE_LABELS = { auto: '去白底', keep: '原样' }
 
 function imageKeyOf (src) {
   var text = String(src || '')
@@ -1581,7 +1616,9 @@ function loadMessages (force) {
   var cached = state.cache[state.folderId]
   // Per-folder cache: painting the cached page first makes switching folders and
   // re-entering a folder instant instead of re-querying the whole server list.
-  if (cached && cached.messages.length && cached.limit >= state.limit) {
+  // It is also persisted (saveFolderLists), so the very first paint after a
+  // reload is instant too, with a refresh following behind it.
+  if (cached && cached.messages.length) {
     state.messages = cached.messages.slice(0, state.limit)
     state.total = cached.total
     render()
@@ -1596,6 +1633,7 @@ function loadMessages (force) {
       at: Date.now(),
       limit: state.limit,
     }
+    saveFolderLists()
     setError('')
     render()
   }).catch(function (error) {
@@ -3266,7 +3304,16 @@ function openAiTab () {
   var now = Date.now()
   if (now - aiTabAskedAt < 2500) return
   aiTabAskedAt = now
-  dshCall('panel/open-ai', {}, 20000).catch(function () { /* fall back to inline */ })
+  // Loud on purpose: the whole point is that the block is NOT at the panel's
+  // bottom any more, so a silent failure would look like the AI simply stopped
+  // working. On failure the inline pane comes back instead.
+  dshCall('panel/open-ai', {}, 20000).then(function () {
+    setNotice('AI 输出在右侧边栏的 “Thunderbird AI” 标签里')
+  }).catch(function (error) {
+    state.aiRight = false
+    document.documentElement.classList.remove('ai-mirrored')
+    setError('没能打开右侧边栏 AI 标签：' + String((error && error.message) || error) + '（已回退到面板内）')
+  })
 }
 
 // Declared before use: calling openTab again only focuses the existing tab, so a
@@ -3291,6 +3338,45 @@ function mirrorAi () {
   if (state.ai.open) openAiTab()
   postAiState()
 }
+
+// ------------------------------------------------- UI state that must survive
+// The folder tree's shape and each folder's last message page are view state,
+// not mail state, so localStorage is the right home for them.
+function saveCollapsed () {
+  try { localStorage.setItem('dsh-tb-collapsed', JSON.stringify(state.collapsed || {})) } catch (error) { /* no storage */ }
+}
+
+// localStorage is ~5MB and one page of headers is tens of KB, so only the most
+// recently used folders are kept, and only the head of each list. A trimmed
+// cache still paints — the full page replaces it a moment later.
+function saveFolderLists () {
+  try {
+    var cache = state.cache || {}
+    var keys = Object.keys(cache)
+    keys.sort(function (a, b) { return (cache[b].at || 0) - (cache[a].at || 0) })
+    var out = {}
+    for (var i = 0; i < Math.min(keys.length, 6); i++) {
+      var entry = cache[keys[i]]
+      if (!entry || !entry.messages) continue
+      out[keys[i]] = { messages: entry.messages.slice(0, 120), total: entry.total, at: entry.at }
+    }
+    localStorage.setItem('dsh-tb-lists', JSON.stringify(out))
+  } catch (error) { /* quota or no storage: caching is best-effort */ }
+}
+
+function restoreUiState () {
+  try {
+    state.collapsed = JSON.parse(localStorage.getItem('dsh-tb-collapsed') || '{}') || {}
+  } catch (error) { state.collapsed = {} }
+  try {
+    var lists = JSON.parse(localStorage.getItem('dsh-tb-lists') || '{}') || {}
+    state.cache = state.cache || {}
+    for (var key in lists) {
+      if (lists[key] && lists[key].messages && lists[key].messages.length) state.cache[key] = lists[key]
+    }
+  } catch (error) { /* start with an empty cache */ }
+}
+restoreUiState()
 
 $('btn-refresh').onclick = function () { loadFolders().then(loadMessages).catch(function (e) { setError(e.message) }) }
 $('btn-search').onclick = runSearch
