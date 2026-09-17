@@ -645,7 +645,10 @@ window.__ModuleLoader__.load({
           replyTo(event.source, msg.id, {
             ok: true,
             result: {
-              services: ['layout', 'sessions', 'uiWorkspace', 'workspaces', 'betterSidebar'].map(describe),
+              services: (Array.isArray(msg.names) && msg.names.length
+                ? msg.names
+                : ['layout', 'sessions', 'uiWorkspace', 'workspaces', 'betterSidebar']
+              ).map(describe),
               tabs: (function () {
                 var sidebar = serviceOf(ctx, 'betterSidebar')
                 if (sidebar === undefined) return []
@@ -682,6 +685,14 @@ window.__ModuleLoader__.load({
         // `url` is what makes the open land in the NATIVE column: the sidebar
         // routes an open carrying a path/url through its native surface, and an
         // open without one into its own bottom workbench.
+        // NOTE: there is deliberately no `session/ensure` here. Materialising a
+        // saved session was tried through every read-only door the client face
+        // offers — binding / scope / materializeScope / resolve / sessionOf — and
+        // NONE of them brings it into the host's registry: binding and scope
+        // return objects, materializeScope throws "already has a bound scope",
+        // sessionOf is undefined. `sessions.open` is the only thing that works, so
+        // that is what the panel uses, and it is honest about the side effect
+        // (it makes that session current).
         if (msg.type === 'panel/open-ai' || msg.type === 'panel/open-tab') {
           var facts = []
           var sidebar = serviceOf(activeCtx, 'betterSidebar')

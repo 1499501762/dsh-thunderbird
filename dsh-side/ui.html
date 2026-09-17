@@ -71,14 +71,52 @@
   .split::before { content: ''; position: absolute; left: 3px; top: 0; bottom: 0; width: 1px; background: var(--tb-border); transition: background .12s; }
   .split:hover::before, .split.dragging::before { background: var(--tb-accent); }
 
-  .bar { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--tb-bg-1); border-bottom: 1px solid var(--tb-border); flex-wrap: wrap; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--tb-err); flex: none; }
-  .dot.on { background: var(--tb-ok); }
-  .title { font-weight: 600; font-size: 14px; }
-  .chips { color: var(--tb-text-dim); font-size: 11px; display: flex; gap: 6px; flex-wrap: wrap; }
-  .chip { background: var(--tb-bg-2); border-radius: 999px; padding: 1px 8px; }
+  /* The brand and the status dot used to sit here too — but the window title bar
+     already shows 「● Thunderbird … 已连接 Thunderbird」, so the panel was saying
+     the same two things twice in two rows. What is left is the part only the
+     panel knows: which identities are loaded.
+     nowrap, not wrap: the bar must overflow so the script can see it does and
+     move buttons into 「⋯」. A wrapping bar silently grew a second row instead. */
+  .bar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--tb-bg-1); border-bottom: 1px solid var(--tb-border); flex-wrap: nowrap; }
+  .chips { color: var(--tb-text-dim); font-size: 11px; display: flex; gap: 6px; flex-wrap: nowrap; overflow: hidden; flex: 0 1 auto; min-width: 0; }
+  .chip { background: var(--tb-bg-2); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
   .sep { width: 1px; align-self: stretch; background: var(--tb-border); }
-  .grow { flex: 1; }
+  /* The spacer takes the slack; everything else keeps its natural width so the
+     overflow measurement means something. */
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .bar > .btn { flex: 0 0 auto; }
+  /* No transition: the width follows every keystroke, and animating it made the
+     box lag behind the text it is supposed to be sizing itself to. */
+  #search { flex: 0 0 auto; width: 150px; }
+  .barmenu {
+    position: fixed;
+    right: calc(14px + var(--tb-inset-right, 0px));
+    z-index: 140;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 132px;
+    padding: 5px;
+    background: var(--tb-glass-1);
+    backdrop-filter: var(--tb-glass-blur-strong);
+    -webkit-backdrop-filter: var(--tb-glass-blur-strong);
+    border: 1px solid var(--tb-glass-line);
+    border-radius: 11px;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, .45);
+  }
+  .barmenu button {
+    border: 0;
+    background: transparent;
+    color: var(--tb-text);
+    text-align: left;
+    padding: 6px 9px;
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12.5px;
+    white-space: nowrap;
+  }
+  .barmenu button:hover { background: var(--tb-hover); }
 
   input, textarea, button { font: inherit; color: inherit; }
   .input, .textarea { background: var(--tb-bg); border: 1px solid var(--tb-border); border-radius: 6px; padding: 5px 8px; outline: none; min-width: 0; }
@@ -938,22 +976,22 @@
 </head>
 <body>
 <div class="app">
-  <div class="bar">
-    <span class="dot" id="dot"></span>
-    <span class="title">Thunderbird</span>
+  <div class="bar" id="bar">
     <span class="chips" id="chips"></span>
-    <span class="sep"></span>
-    <input class="input grow" id="search" placeholder="搜索邮件…" style="max-width:260px">
+    <input class="input" id="search" placeholder="搜索邮件…">
     <button class="btn" id="btn-search">搜索</button>
-    <button class="btn" id="btn-refresh">刷新</button>
-    <button class="btn" id="btn-rules">分类规则</button>
-    <button class="btn" id="btn-sessions">会话</button>
-    <button class="btn" id="btn-signatures">签名</button>
-    <button class="btn" id="btn-group" title="按主题聚合">聚合</button>
+    <span class="grow"></span>
     <button class="btn" id="btn-ai-sum" hidden>总结已选</button>
     <button class="btn" id="btn-ai-ask" hidden>提问已选</button>
+    <button class="btn" id="btn-refresh" data-overflow="1">刷新</button>
+    <button class="btn" id="btn-rules" data-overflow="1">分类规则</button>
+    <button class="btn" id="btn-sessions" data-overflow="1">会话</button>
+    <button class="btn" id="btn-signatures" data-overflow="1">签名</button>
+    <button class="btn" id="btn-group" data-overflow="1" title="按主题聚合">聚合</button>
+    <button class="btn" id="btn-more" hidden title="更多">⋯</button>
     <button class="btn primary" id="btn-compose">写邮件</button>
   </div>
+  <div class="barmenu" id="barmenu" hidden></div>
 
   <div class="searchbar" id="searchbar" hidden>
     <label>主题<input class="input" id="q-subject" placeholder="主题包含…"></label>
@@ -1368,7 +1406,112 @@ function renderChips () {
     chip.textContent = state.accounts[i].name
     $('chips').appendChild(chip)
   }
+  layoutBar()
 }
+
+// ------------------------------------------------------- 顶栏自适应（更多 / 搜索框）
+// Two behaviours the CSS cannot express: buttons that do not fit fold into 「⋯」,
+// and the search box is as wide as what is typed in it.
+;(function () {
+  var bar = $('bar')
+  var search = $('search')
+  var more = $('btn-more')
+  var menu = $('barmenu')
+  if (!bar || !search || !more || !menu) return
+  var foldable = [].slice.call(bar.querySelectorAll('[data-overflow]'))
+
+  function closeMenu () { menu.hidden = true }
+
+  function renderMenu () {
+    var hidden = foldable.filter(function (b) { return b.hidden })
+    if (!hidden.length) { more.hidden = true; closeMenu(); return }
+    more.hidden = false
+    menu.innerHTML = ''
+    hidden.forEach(function (b) {
+      var item = document.createElement('button')
+      item.type = 'button'
+      item.textContent = b.textContent
+      item.onclick = function (event) {
+        event.stopPropagation()
+        closeMenu()
+        b.click()
+      }
+      menu.appendChild(item)
+    })
+  }
+
+  // The bar's padding, and where the popup should hang.
+  function placeMenu () {
+    var rect = bar.getBoundingClientRect()
+    menu.style.top = Math.round(rect.bottom + 4) + 'px'
+  }
+
+  // Show everything, then fold from the END until it fits. Folding is monotonic —
+  // hiding a button only ever frees space — so one pass is enough, and measuring
+  // with the buttons visible is the only way to learn how much room they want.
+  function layout () {
+    closeMenu()
+    foldable.forEach(function (b) { b.hidden = false })
+    // 「⋯」 must already be visible WHILE measuring: it is ~50px wide, so revealing
+    // it after the fit check pushed the bar back into overflow and the loop
+    // stopped one button too early.
+    more.hidden = false
+    for (var i = foldable.length - 1; i >= 0; i--) {
+      if (bar.scrollWidth <= bar.clientWidth) break
+      foldable[i].hidden = true
+    }
+    var folded = foldable.filter(function (b) { return b.hidden })
+    more.hidden = folded.length === 0
+    renderMenu()
+    placeMenu()
+    sizeSearch()
+  }
+
+  // A hidden mirror of the bar's own font: `input.value.length * n` is wrong for
+  // every font that is not monospaced, and CJK is always non-monospaced.
+  var mirror = document.createElement('span')
+  mirror.setAttribute('aria-hidden', 'true')
+  mirror.style.cssText = 'position:absolute;left:-9999px;top:-9999px;white-space:pre;visibility:hidden'
+  document.body.appendChild(mirror)
+
+  function sizeSearch () {
+    var style = getComputedStyle(search)
+    mirror.style.font = style.font || (style.fontSize + ' ' + style.fontFamily)
+    var text = search.value || search.placeholder || ''
+    mirror.textContent = text
+    // +26 for the input's own padding and caret room.
+    var wanted = mirror.getBoundingClientRect().width + 26
+    var max = Math.max(160, Math.min(320, window.innerWidth * 0.34))
+    var width = Math.round(Math.max(112, Math.min(max, wanted)))
+    // Only write when it actually changes: a ResizeObserver watches this bar, and
+    // a needless write is a needless notification.
+    if (search.style.width !== width + 'px') search.style.width = width + 'px'
+  }
+
+  search.addEventListener('input', sizeSearch)
+  search.addEventListener('focus', sizeSearch)
+
+  more.onclick = function (event) {
+    event.stopPropagation()
+    var willShow = menu.hidden
+    closeMenu()
+    if (willShow) { renderMenu(); placeMenu(); menu.hidden = false }
+  }
+  document.addEventListener('click', function (event) {
+    if (menu.hidden) return
+    if (menu.contains(event.target) || event.target === more) return
+    closeMenu()
+  })
+  document.addEventListener('keydown', function (event) { if (event.key === 'Escape') closeMenu() })
+  window.addEventListener('resize', layout)
+
+  window.layoutBar = layout
+  window.sizeSearch = sizeSearch
+  // The bar is inside an iframe that the host can resize (the centre column, or a
+  // sidebar tab), so a window resize event is not the only thing to watch.
+  if (typeof ResizeObserver === 'function') new ResizeObserver(layout).observe(bar)
+  layout()
+})()
 
 // A pinned folder is a COPY parked at the top, not a reordered original: the row
 // keeps its place in the tree, so collapsing an account cannot hide it and no
@@ -2182,7 +2325,9 @@ function button (label, handler) {
 }
 
 function renderStatus () {
-  $('dot').className = 'dot' + (state.online ? ' on' : '')
+  // No status dot in the bar any more: the window title bar already reports the
+  // connection, and the panel's own foot repeats it. `f-status` is the one place
+  // inside the panel that has to say it.
   $('online').hidden = !state.online
   $('offline').hidden = state.online
   $('f-status').textContent = state.online ? '已连接 Thunderbird' : '等待 Thunderbird 连接'
@@ -3014,6 +3159,8 @@ function updatePickBar () {
   ask.hidden = count === 0
   sum.textContent = '总结已选（' + count + '）'
   ask.textContent = '提问已选（' + count + '）'
+  // Selecting mail adds two buttons to the bar, so it has to be re-measured.
+  if (window.layoutBar) layoutBar()
 }
 
 function collectCheckedText (done) {
@@ -4904,7 +5051,7 @@ function chatOf (key) {
   return chats[key]
 }
 
-function loadTranscript (record) {
+function loadTranscript (record, autoLoad) {
   var chat = chatOf(record.key)
   return fetch('/api/thunderbird/session/transcript?key=' + encodeURIComponent(record.key) + '&limit=60', { cache: 'no-store' })
     .then(function (res) { return res.json().catch(function () { return null }) })
@@ -4914,18 +5061,44 @@ function loadTranscript (record) {
         chat.error = (out && out.error) || '读不到会话记录'
         return chat
       }
-      chat.messages = out.messages || []
-      chat.running = out.running === true
-      chat.live = out.live === true
-      chat.note = out.note || ''
-      chat.error = ''
-      return chat
+      if (out.live === true) {
+        chat.needsLoad = false
+        chat.autoTried = false
+        return applyTranscript(chat, out)
+      }
+      // A saved session is only materialised when something opens it, so a
+      // thread you have not touched since DSH started has no in-memory log.
+      // `sessions.open` is the door that loads it — and it also makes that
+      // session CURRENT, which is a visible change to the main column. That is
+      // why the dedicated session tab (which the user opened FOR this session)
+      // just does it, while the panel's 会话 window asks first: it renders one
+      // chat block per bound thread, and auto-loading would switch the main
+      // column once per row.
+      chat.needsLoad = !!record.sessionId
+      if (autoLoad && record.sessionId && chat.autoTried !== true && chat.autoLoading !== true) {
+        chat.autoTried = true
+        chat.autoLoading = true
+        chat.note = '正在让 DSH 加载这个会话…'
+        return dshCall('session/open', { sessionId: record.sessionId }, 20000)
+          .then(function () { chat.autoLoading = false; return loadTranscript(record, autoLoad) })
+          .catch(function () { chat.autoLoading = false; return applyTranscript(chat, out) })
+      }
+      return applyTranscript(chat, out)
     })
     .catch(function (error) {
       chat.loaded = true
       chat.error = String((error && error.message) || error)
       return chat
     })
+}
+
+function applyTranscript (chat, out) {
+  chat.messages = out.messages || []
+  chat.running = out.running === true
+  chat.live = out.live === true
+  chat.note = out.note || ''
+  chat.error = ''
+  return chat
 }
 
 // The same chat state is drawn in two places — the floating 会话 window inside
@@ -4998,6 +5171,22 @@ function chatBlock (record) {
   else if (chat.running) status.textContent = '模型正在回复…'
   else status.textContent = chat.messages.length ? '空闲 · ' + chat.messages.length + ' 条记录' : '还没有对话，下面说点什么'
   if (chat.error) status.className += ' err'
+  // A saved session has to be opened once before its log exists in memory. The
+  // dedicated session tab does that by itself; here it is one click, because this
+  // window draws one block per thread and opening them all would switch the main
+  // column once per row.
+  if (chat.needsLoad && !chat.live && record.sessionId) {
+    if (chat.note) status.textContent = chat.note
+    status.appendChild(button('加载会话', function () {
+      chat.autoTried = false
+      chat.note = '正在让 DSH 加载这个会话…'
+      refreshChats()
+      dshCall('session/open', { sessionId: record.sessionId }, 20000)
+        .then(function () { return loadTranscript(record) })
+        .then(refreshChats)
+        .catch(function (error) { setError(String((error && error.message) || error)) })
+    }))
+  }
   wrap.appendChild(status)
 
   if (chat.messages.length) {
@@ -5145,10 +5334,13 @@ function renderSessionView () {
   }
   body.innerHTML = ''
   body.appendChild(chatBlock(record))
-  // The transcript the chat block wants may not have been read yet; it kicks off
-  // its own load and re-renders, so nothing more is needed here.
+  // As a whole page this frame exists FOR this session, so `sessions.open` (the
+  // call that materialises a saved log) is the right thing to do without asking:
+  // the column switch it causes is the session the user asked to see.
   var chat = chatOf(record.key)
-  if (chat.loaded && chat.running) watchTranscript(record)
+  if (!chat.loaded) loadTranscript(record, true).then(function () { refreshChats() })
+  else if (chat.needsLoad && !chat.live && chat.autoTried !== true) loadTranscript(record, true).then(function () { refreshChats() })
+  else if (chat.running) watchTranscript(record)
 }
 
 if (SESSION_VIEW) {
@@ -5161,7 +5353,8 @@ if (SESSION_VIEW) {
       loadSessions().then(function () {
         var chat = chatOf(record.key)
         chat.loaded = false
-        return loadTranscript(record)
+        chat.autoTried = false
+        return loadTranscript(record, true)
       }).then(renderSessionView)
     }
   }
