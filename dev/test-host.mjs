@@ -352,6 +352,55 @@ check('reset restores every default',
   reset.settings.kbRoot === defaults.settings.kbRoot && reset.settings.kbLimit === 50 &&
   reset.settings.sensitivity === 'private', JSON.stringify(reset.settings))
 
+// ---- 持久化邮件缓存 ---------------------------------------------------------
+// The panel's localStorage tier survives a reload but not a DSH restart, and it is
+// capped at six folders. This is the durable copy behind it.
+const emptyCache = await get('/api/thunderbird/cache')
+check('cache GET on a first run answers ok with no lists',
+  emptyCache.ok === true && emptyCache.lists === null, JSON.stringify(emptyCache))
+
+const cacheLists = { 'account1://INBOX': { messages: [{ id: 1, subject: '持久化验证' }], total: 1, at: 1234 } }
+const wrote = await post('/api/thunderbird/cache/set', { lists: cacheLists })
+check('cache POST reports how many folders it stored', wrote.ok === true && wrote.folders === 1, JSON.stringify(wrote))
+
+const readBack = await get('/api/thunderbird/cache')
+check('cache round-trips through disk',
+  readBack.ok === true && readBack.lists && readBack.lists['account1://INBOX'] &&
+  readBack.lists['account1://INBOX'].messages[0].subject === '持久化验证',
+  JSON.stringify(readBack.lists).slice(0, 120))
+
+const cacheOnDisk = JSON.parse(await readKb(join(home, 'dsh-thunderbird', 'cache', 'lists.json'), 'utf8'))
+check('the cache file is real json on disk, outside localStorage',
+  cacheOnDisk['account1://INBOX'].total === 1, JSON.stringify(cacheOnDisk).slice(0, 80))
+
+const badCache = await post('/api/thunderbird/cache/set', { nope: true })
+check('cache POST rejects a body without lists', badCache.ok === false, JSON.stringify(badCache))
+
+// ---- 远程图片信任域 ---------------------------------------------------------
+// "Which hosts may this panel contact" has to be a decision the user can keep, so
+// it lives in settings.json and is normalised on the way in.
+const hostSettings = await post('/api/thunderbird/settings/set', {
+  imageHosts: ['Example.COM', 'example.com', '.cdn.example.net', '  ', 'Example.com'],
+})
+check('image hosts are lower-cased, de-duplicated and stripped of a leading dot',
+  JSON.stringify(hostSettings.settings.imageHosts) === JSON.stringify(['example.com', 'cdn.example.net']),
+  JSON.stringify(hostSettings.settings.imageHosts))
+check('strict mode defaults to off, so nothing that worked before stops working',
+  hostSettings.settings.imageStrict === false, String(hostSettings.settings.imageStrict))
+
+await post('/api/thunderbird/settings/set', { imageStrict: true })
+const refused = await get('/api/thunderbird/image?url=' + encodeURIComponent('https://tracker.example.org/pixel.gif'))
+check('strict mode refuses an untrusted host by name, not with a broken image',
+  refused.ok === false && refused.error === 'host not trusted' && refused.host === 'tracker.example.org',
+  JSON.stringify(refused))
+check('the refusal is a JSON answer the panel can turn into a 信任此域 button',
+  typeof refused.host === 'string' && refused.strict === true, JSON.stringify(refused))
+
+await post('/api/thunderbird/settings/set', { imageStrict: false, imageHosts: [] })
+const notStrict = await get('/api/thunderbird/image?url=' + encodeURIComponent('not-a-url'))
+check('a malformed url is still rejected regardless of the allow-list',
+  notStrict.ok === false && notStrict.error === 'not a valid url', JSON.stringify(notStrict))
+
 // ---- 邮件名片（联系人） ------------------------------------------------------
 // The harvest input is exactly what the panel already holds after a list load, so
 // this costs no extra bridge round trips.

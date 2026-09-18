@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, rm } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rm, rename } from 'node:fs/promises'
 
 export const name = 'dsh-thunderbird'
 
@@ -789,13 +789,107 @@ export function apply(ctx, config) {
   // Two reasons: the panel can then sample them (a cross-origin image taints the
   // canvas, so a white-backed logo could never be adapted), and the user's mail
   // client is not the one talking to a tracking host.
+  // ------------------------------------------------------------- 远程图片代理
+  //
+  // Every remote image in a mail comes through this one route, so this is what
+  // decides whether a picture appears at all. It used to fetch each image fresh,
+  // with no cache and no ceiling on how many ran at once: a mail carrying thirty
+  // pictures fired thirty simultaneous upstream fetches, all sharing a single 15s
+  // timeout, so the slow ones failed together and rendered as broken images — and
+  // then every re-render fetched the whole set again. That is the "炸图" report.
+  //
+  // Three things changed, and the third is what the user asked for:
+  //   · a disk cache keyed by URL, so a picture is fetched once, ever — which also
+  //     makes a re-render free instead of a stampede;
+  //   · a concurrency gate, so thirty pictures do not become thirty sockets;
+  //   · a persisted host allow-list (settings.imageHosts / imageStrict), because
+  //     which hosts this panel is willing to contact is a privacy decision, and a
+  //     decision the user cannot keep is not really a decision.
+  const IMAGE_CACHE_DIR = join(STORE_DIR, 'image-cache')
+  const IMAGE_MAX_BYTES = 6 * 1024 * 1024
+  const IMAGE_TIMEOUT_MS = 15000
+  const IMAGE_CONCURRENCY = 6
+  let imageActive = 0
+  const imageWaiting = []
+  const imageInflight = new Map()
+
+  function imageGate () {
+    if (imageActive < IMAGE_CONCURRENCY) {
+      imageActive += 1
+      return Promise.resolve()
+    }
+    return new Promise((resolve) => imageWaiting.push(resolve))
+  }
+
+  function imageRelease () {
+    const next = imageWaiting.shift()
+    // Handing the slot straight to the next waiter keeps `imageActive` honest:
+    // decrementing and re-incrementing would let one extra request slip through
+    // every time a queued one starts.
+    if (next) next()
+    else imageActive -= 1
+  }
+
+  const imageCacheKey = (url) => createHash('sha1').update(String(url)).digest('hex')
+
+  function sendImage (res, type, bytes, how) {
+    if (res.writableEnded) return
+    res.writeHead(200, {
+      'content-type': type,
+      'content-length': bytes.length,
+      'cache-control': 'private, max-age=3600',
+      'access-control-allow-origin': '*',
+      'x-tb-image': how,
+    })
+    res.end(bytes)
+  }
+
+  async function fetchImage (url, file, meta) {
+    await imageGate()
+    try {
+      const controller = new AbortController()
+      const timer = ctx.timeout(() => controller.abort(), IMAGE_TIMEOUT_MS)
+      try {
+        const upstream = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+        if (!upstream.ok) throw new Error('HTTP ' + upstream.status)
+        const type = upstream.headers.get('content-type') || 'application/octet-stream'
+        if (!/^image\//i.test(type)) throw new Error('not an image: ' + type)
+        const body = Buffer.from(await upstream.arrayBuffer())
+        if (body.length > IMAGE_MAX_BYTES) throw new Error('image larger than 6 MB')
+        await mkdir(IMAGE_CACHE_DIR, { recursive: true })
+        // Written under a temporary name first: an interrupted write must never
+        // leave a half image that the cache would then serve forever.
+        await writeFile(file + '.tmp', body)
+        await writeFile(meta + '.tmp', JSON.stringify({ type, at: Date.now() }), 'utf8')
+        await rm(file, { force: true })
+        await rm(meta, { force: true })
+        await rename(file + '.tmp', file)
+        await rename(meta + '.tmp', meta)
+        return { type, body }
+      } finally {
+        timer()
+      }
+    } finally {
+      imageRelease()
+    }
+  }
+
   const imageProxyHandler = async (req, res) => {
     if (preflight(req, res)) return
     const target = param(req.url, 'url')
     if (!target) { sendJson(res, 400, { ok: false, error: 'url query parameter is required' }); return }
+    // `param` does NOT decode, and the panel sends `encodeURIComponent(url)`. This
+    // handler never decoded, so `new URL('https%3A%2F%2F…')` threw on every single
+    // proxied image and the route answered "not a valid url" — which the panel's
+    // fallbackProxiedImages then papered over by pointing the <img> straight at the
+    // remote host. That is why there were no cache hits to speak of and why a mail
+    // full of pictures fell apart: instead of one controlled, cached, gated fetch
+    // per image, every render fired a burst of direct cross-origin loads.
+    let decoded = String(target)
+    try { decoded = decodeURIComponent(decoded) } catch (error) { /* already decoded */ }
     let parsed
     try {
-      parsed = new URL(String(target))
+      parsed = new URL(decoded)
     } catch (error) {
       sendJson(res, 400, { ok: false, error: 'not a valid url' })
       return
@@ -804,27 +898,43 @@ export function apply(ctx, config) {
       sendJson(res, 400, { ok: false, error: 'only http(s) images' })
       return
     }
-    let disposeTimer = null
+    const current = await loadSettings()
+    const host = parsed.host.toLowerCase()
+    const trusted = (current.imageHosts || []).map((entry) => String(entry).toLowerCase())
+    // `host` carries the port, the allow-list entries do not, so compare both the
+    // full host and the bare hostname — otherwise a host trusted at :443 is never
+    // recognised at :8080 and the user cannot tell why.
+    const bare = parsed.hostname.toLowerCase()
+    if (current.imageStrict === true && trusted.indexOf(host) < 0 && trusted.indexOf(bare) < 0) {
+      // A distinguishable answer, not a broken image: the panel turns this into a
+      // "信任此域" affordance instead of an empty box.
+      sendJson(res, 200, { ok: false, error: 'host not trusted', host: bare, strict: true })
+      return
+    }
+    const file = join(IMAGE_CACHE_DIR, imageCacheKey(parsed.toString()))
+    const meta = file + '.json'
     try {
-      const controller = new AbortController()
-      disposeTimer = ctx.timeout(() => controller.abort(), 15000)
-      const upstream = await fetch(parsed.toString(), { signal: controller.signal, redirect: 'follow' })
-      if (!upstream.ok) { sendJson(res, 200, { ok: false, error: 'HTTP ' + upstream.status }); return }
-      const type = upstream.headers.get('content-type') || 'application/octet-stream'
-      if (!/^image\//i.test(type)) { sendJson(res, 200, { ok: false, error: 'not an image: ' + type }); return }
-      const body = Buffer.from(await upstream.arrayBuffer())
-      if (body.length > 6 * 1024 * 1024) { sendJson(res, 200, { ok: false, error: 'image larger than 6 MB' }); return }
-      if (res.writableEnded) return
-      res.writeHead(200, {
-        'content-type': type,
-        'cache-control': 'private, max-age=900',
-        'access-control-allow-origin': '*',
-      })
-      res.end(body)
+      const head = JSON.parse(await readFile(meta, 'utf8'))
+      const bytes = await readFile(file)
+      if (bytes.length && head && typeof head.type === 'string') {
+        sendImage(res, head.type, bytes, 'hit')
+        return
+      }
+    } catch (error) { /* not cached yet */ }
+    try {
+      // One upstream request per URL, however many <img> tags ask for it.
+      let work = imageInflight.get(file)
+      if (work === undefined) {
+        work = fetchImage(parsed.toString(), file, meta)
+        imageInflight.set(file, work)
+        // The map is cleaned up on settle, not on success: a failed fetch must not
+        // be remembered as in-flight forever.
+        work.then(() => imageInflight.delete(file), () => imageInflight.delete(file))
+      }
+      const out = await work
+      sendImage(res, out.type, out.body, 'miss')
     } catch (error) {
-      sendJson(res, 200, { ok: false, error: err(error) })
-    } finally {
-      if (disposeTimer !== null) disposeTimer()
+      sendJson(res, 200, { ok: false, error: err(error), host: bare })
     }
   }
 
@@ -1489,6 +1599,13 @@ export function apply(ctx, config) {
     sensitivity: 'private',
     autoIndex: false,     // after an export, open a session that indexes it
     pollMs: 1200,
+    // Which hosts this panel may fetch remote images from. An empty list with
+    // imageStrict=false is the behaviour that was hardcoded before (fetch
+    // anything); turning strict on makes the list an ALLOW-list. "Which hosts may
+    // this panel talk to" is a privacy decision the user should be able to make
+    // and then keep, which is why it lives in settings.json and not in memory.
+    imageHosts: [],
+    imageStrict: false,
   }
   const SENSITIVITIES = ['public', 'internal', 'private']
 
@@ -1507,6 +1624,21 @@ export function apply(ctx, config) {
     if (SENSITIVITIES.indexOf(String(input.sensitivity)) >= 0) out.sensitivity = String(input.sensitivity)
     if (typeof input.autoIndex === 'boolean') out.autoIndex = input.autoIndex
     if (Number.isFinite(Number(input.pollMs))) out.pollMs = Math.max(300, Math.min(10000, Math.round(Number(input.pollMs))))
+    // Hosts are normalised to lower case and de-duplicated, because the same host
+    // arrives spelled differently from different mails and a duplicate entry is
+    // indistinguishable from a bug when someone reads the file.
+    if (Array.isArray(input.imageHosts)) {
+      const seen = {}
+      const list = []
+      for (const raw of input.imageHosts) {
+        const host = String(raw || '').trim().toLowerCase().replace(/^\.+/, '')
+        if (!host || seen[host]) continue
+        seen[host] = true
+        list.push(host)
+      }
+      out.imageHosts = list.slice(0, 500)
+    }
+    if (typeof input.imageStrict === 'boolean') out.imageStrict = input.imageStrict
     return out
   }
 
@@ -1693,6 +1825,45 @@ export function apply(ctx, config) {
     sendJson(res, 200, { ok: true, root: current.kbRoot, state: state, jobs: KB_JOBS.size })
   }
 
+  // -------------------------------------------------------- 邮件列表磁盘缓存
+  //
+  // The panel already cached each folder's page, but in localStorage — a ~5MB
+  // store, so it was capped and trimmed to six folders of 120 headers, and it did
+  // not outlive a DSH restart. That is the "有缓存了，但重启还要重新加载" report.
+  //
+  // localStorage stays exactly as it is, because it is the only SYNCHRONOUS store
+  // and it is what paints the first frame before any request has returned. This is
+  // the durable copy behind it: no size cap worth worrying about, no trimming, and
+  // it survives a restart. Two tiers, each doing the thing it is good at.
+  const CACHE_DIR = join(STORE_DIR, 'cache')
+  const CACHE_FILE = join(CACHE_DIR, 'lists.json')
+
+  const cacheGetHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    try {
+      const lists = JSON.parse(await readFile(CACHE_FILE, 'utf8'))
+      sendJson(res, 200, { ok: true, lists: lists && typeof lists === 'object' ? lists : {} })
+    } catch (error) {
+      // No cache yet is the normal first-run answer, not an error.
+      sendJson(res, 200, { ok: true, lists: null })
+    }
+  }
+
+  const cacheSetHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    const lists = input && input.lists
+    if (!lists || typeof lists !== 'object') { sendJson(res, 400, { ok: false, error: 'expected {lists}' }); return }
+    try {
+      await mkdir(CACHE_DIR, { recursive: true })
+      await writeFile(CACHE_FILE, JSON.stringify(lists), 'utf8')
+      sendJson(res, 200, { ok: true, folders: Object.keys(lists).length })
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    }
+  }
+
   // ---- mount ---------------------------------------------------------------
 
   const routes = [
@@ -1713,6 +1884,8 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/remove', sessionRemoveHandler],
     ['/api/thunderbird/session/detach', sessionDetachHandler],
     ['/api/thunderbird/kb/export', kbExportHandler],
+    ['/api/thunderbird/cache', cacheGetHandler],
+    ['/api/thunderbird/cache/set', cacheSetHandler],
     ['/api/thunderbird/kb/status', kbStatusHandler],
     ['/api/thunderbird/contacts/list', contactsListHandler],
     ['/api/thunderbird/contacts/get', contactsGetHandler],

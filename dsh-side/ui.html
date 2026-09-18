@@ -2733,8 +2733,14 @@ function loadFolders () {
     state.accounts = accounts || []
     state.folders = flatten(state.accounts)
     if (!state.folderId && state.folders.length) {
+      // Reopen the folder the user was last in rather than always the inbox. The
+      // message cache is keyed by folder, so landing somewhere else makes every
+      // entry miss and a restart feels like it cached nothing.
+      var remembered = ''
+      try { remembered = localStorage.getItem('dsh-tb-folder') || '' } catch (error) { remembered = '' }
+      var known = remembered ? state.folders.filter(function (f) { return f.id === remembered })[0] : null
       var inbox = state.folders.filter(function (f) { return (f.specialUse || []).indexOf('inbox') >= 0 })[0]
-      state.folderId = (inbox || state.folders[0]).id
+      state.folderId = (known || inbox || state.folders[0]).id
     }
     render()
     return state.folderId
@@ -2802,6 +2808,9 @@ function harvestContacts (messages) {
 
 function selectFolder (id) {
   state.folderId = id
+  // Remembered so a restart reopens here — which is also what makes the persisted
+  // message cache hit instead of miss.
+  try { localStorage.setItem('dsh-tb-folder', String(id)) } catch (error) { /* no storage */ }
   state.current = null
   state.body = null
   state.limit = 200
@@ -4523,7 +4532,40 @@ function ctxEditorAiItems () {
 function ctxImageItems () {
   var img = ctxState.image
   if (!img) return []
-  return [['__sep'], ['图片另存为…', '', function () { ctxSaveImage(img) }]]
+  var items = [['__sep'], ['图片另存为…', '', function () { ctxSaveImage(img) }]]
+  var host = imageHostOf(img)
+  if (host) items.push(['信任 ' + host + ' 的图片', '', function () { trustImageHost(host) }])
+  return items
+}
+
+// The host of the picture under the cursor, from whichever form its src is in: the
+// panel rewrites remote images to the proxy (percent-encoded), and the fallback
+// puts the original address back.
+function imageHostOf (img) {
+  var marker = '/api/thunderbird/image?url='
+  var src = String((img && (img.currentSrc || img.getAttribute('src'))) || '')
+  var at = src.indexOf(marker)
+  if (at >= 0) {
+    try { src = decodeURIComponent(src.slice(at + marker.length)) } catch (error) { return '' }
+  }
+  try { return new URL(src, location.origin).hostname.toLowerCase() } catch (error) { return '' }
+}
+
+// Adds one host to the persisted allow-list. The list only has force in strict
+// mode, so trusting also switches strict mode ON — otherwise the click would look
+// like it did nothing, which is worse than a mildly surprising side effect. Both
+// values go to settings.json, so the decision survives a DSH restart.
+function trustImageHost (host) {
+  loadSettings(true).then(function (current) {
+    var hosts = (current.imageHosts || []).slice()
+    if (hosts.indexOf(host) < 0) hosts.push(host)
+    return saveSettingsForm({ imageHosts: hosts, imageStrict: true })
+  }).then(function () {
+    setNotice('已信任 ' + host + ' 的图片，之后这个域不再拦截')
+    if (state.current) openMessage(state.current)
+  }).catch(function (error) {
+    setError('保存信任域失败：' + String((error && error.message) || error))
+  })
 }
 
 function ctxMailItems () {
@@ -4763,7 +4805,12 @@ function pollStatus () {
     state.online = !!(data && data.online)
     state.handled = (data && data.handled) || 0
     if (state.online && !was) {
-      loadFolders().then(loadMessages).catch(function (error) { setError(error.message) })
+      // Take the durable cache first, so this very first load paints from disk
+      // instead of waiting on a full server round trip — that is the whole point of
+      // persisting it.
+      restoreListsFromHost().then(function () {
+        return loadFolders().then(loadMessages)
+      }).catch(function (error) { setError(error.message) })
     }
     // A session deleted in DSH is unbound by the client half, which runs whether
     // or not this panel is open — but the 会话 window would keep showing the dead
@@ -6984,6 +7031,50 @@ function saveFolderLists () {
     }
     localStorage.setItem('dsh-tb-lists', JSON.stringify(out))
   } catch (error) { /* quota or no storage: caching is best-effort */ }
+  saveListsToHost()
+}
+
+// The same cache, mirrored to the host's disk. Two tiers, each doing the thing it
+// is actually good at: localStorage is the only SYNCHRONOUS store, so it paints in
+// the first frame before any request has returned — but it is ~5MB, so it was
+// capped at six folders of 120 headers, and it did not outlive a DSH restart. That
+// is why a restart still had to load everything. The disk copy has no cap worth
+// worrying about and survives the restart.
+//
+// Debounced because this runs on every folder switch and the whole cache is a few
+// hundred KB. Fire and forget: a cache write must never disturb reading mail.
+var saveListsTimer = null
+function saveListsToHost () {
+  if (saveListsTimer) clearTimeout(saveListsTimer)
+  saveListsTimer = setTimeout(function () {
+    saveListsTimer = null
+    postJson('/api/thunderbird/cache/set', { lists: state.cache || {} }).catch(function () { /* best effort */ })
+  }, 1500)
+}
+
+// Applied BEHIND the synchronous tier. Anything the disk knows and this page does
+// not — a folder trimmed out of localStorage, or every folder after a restart —
+// lands here. The newer `at` wins, so a stale disk entry can never overwrite a page
+// that was just fetched from Thunderbird.
+function restoreListsFromHost () {
+  return fetch('/api/thunderbird/cache', { cache: 'no-store' }).then(function (r) { return r.json() }).then(function (out) {
+    if (!out || out.ok !== true || !out.lists) return
+    state.cache = state.cache || {}
+    var changed = false
+    for (var key in out.lists) {
+      var fresh = out.lists[key]
+      if (!fresh || !fresh.messages || !fresh.messages.length) continue
+      var mine = state.cache[key]
+      if (!mine || (fresh.at || 0) > (mine.at || 0)) { state.cache[key] = fresh; changed = true }
+    }
+    // If the folder on screen gained something, repaint from it now rather than
+    // waiting for the next folder switch.
+    if (changed && state.folderId && state.cache[state.folderId]) {
+      state.messages = state.cache[state.folderId].messages.slice(0, state.limit || 200)
+      state.total = state.cache[state.folderId].total
+      render()
+    }
+  }).catch(function () { /* no host cache is normal on a first run */ })
 }
 
 function restoreUiState () {
