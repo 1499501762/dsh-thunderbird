@@ -59,9 +59,18 @@
   html, body { height: 100%; }
   body {
     margin: 0; font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
-    color: var(--tb-text); background: var(--tb-bg); overflow: hidden;
+    color: var(--tb-text); overflow: hidden;
+    /* No opaque base. The panel lives in an iframe over DSH's own background, and
+       an opaque body here painted a flat slab that ignored the app around it — the
+       "no frosted glass" complaint. Leaving this transparent is what lets the
+       layers below tint through. */
+    background: transparent;
   }
-  .app { display: flex; flex-direction: column; height: 100%; background: var(--tb-bg-1); }
+  /* The base layer is set in the glass pass below; only the transparency of the
+     document itself belongs here. */
+  .app {
+    display: flex; flex-direction: column; height: 100%;
+  }
   /* The titlebar strip is a drag region in the PARENT document: it swallows
      pointer events for its full width, and an iframe cannot opt out with
      no-drag. So the bar's surface is painted from y=0 (no visual gap) while its
@@ -503,7 +512,21 @@
      One material for every surface that floats or that content scrolls under, so
      the panel reads as layered glass instead of "some boxes are blurry". Blur
      needs something behind it to be visible, hence the wash on .app: without it
-     a translucent layer over a flat fill is just a slightly wrong solid. */
+     a translucent layer over a flat fill is just a slightly wrong solid.
+
+     The wash used to END in an opaque var(--tb-bg-1). That was the whole reason
+     the panel still looked like a flat slab: .bar / .folders / .list were already
+     translucent, but the only thing behind them was this opaque fill, so their
+     translucency had nothing to reveal and composited to a solid. The third layer
+     is now the translucent token, and the document behind it is transparent, so
+     DSH's own background reaches the panel and the layers above actually read as
+     glass.
+
+     On the blur specifically: the panel covers DSH's centre column, so what is
+     behind it is DSH's background rather than content — there is nothing for a
+     backdrop filter to smear there. The blur earns its keep on the floating
+     windows (.ai, #rules, #sessions, .compose), which really do sit over the
+     panel's own content. */
   :root {
     --tb-glass-blur: saturate(1.15) blur(16px);
     --tb-glass-blur-strong: saturate(1.2) blur(24px);
@@ -516,7 +539,7 @@
     background:
       radial-gradient(1200px 620px at 12% -10%, color-mix(in srgb, var(--tb-accent) 9%, transparent), transparent 62%),
       radial-gradient(900px 520px at 108% 8%, color-mix(in srgb, var(--tb-text) 5%, transparent), transparent 58%),
-      var(--tb-bg-1);
+      var(--tb-glass);
   }
   .bar, .foot {
     background: var(--tb-glass-1);

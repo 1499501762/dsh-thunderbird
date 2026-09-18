@@ -57,7 +57,24 @@ window.__ModuleLoader__.load({
       // The view is a fixed overlay on <body> now, positioned from the column's
       // live rect (same technique as the drag shield below, which has always been
       // body-level and has never misbehaved). DSH's element is only ever READ.
-      '[' + VIEW_ATTR + '] { position: fixed; display: none; flex-direction: column; z-index: 60; overflow: hidden; background: var(--dsw-alias-bg-base, #fff); color: var(--dsw-alias-label-primary, #1f2430); font-size: 13px; line-height: 1.5; -webkit-app-region: no-drag; contain: layout paint; }',
+      // The frosted glass belongs HERE, on the overlay in DSH's own document, not
+      // inside the iframe. Two reasons, both measured:
+      //   - this element was `background: var(--dsw-alias-bg-base)` = an opaque
+      //     rgb(21,21,23) slab. That single opaque fill is why the panel had no
+      //     glass: every translucent layer inside the iframe composited onto it and
+      //     came out looking like a flat solid.
+      //   - a backdrop-filter only samples what is actually behind the element.
+      //     Inside the iframe the backdrop is the iframe's own transparent root, so
+      //     a blur there has nothing to smear. Out here the backdrop is the session
+      //     content this overlay covers, so the blur is real.
+      //
+      // 76% + a 26px blur, tuned against the real thing. The blur is what makes a
+      // low alpha safe here: the session content this overlay covers is smeared
+      // beyond legibility, so what comes through is a soft tint rather than
+      // readable text. The first attempt at 64% still read as a washed-out slab;
+      // a fully opaque overlay is what the panel used to be, and that is the
+      // "no frosted glass" this is fixing.
+      '[' + VIEW_ATTR + '] { position: fixed; display: none; flex-direction: column; z-index: 60; overflow: hidden; background: color-mix(in srgb, var(--dsw-alias-bg-base, #fff) 76%, transparent); backdrop-filter: saturate(1.15) blur(26px); -webkit-backdrop-filter: saturate(1.15) blur(26px); color: var(--dsw-alias-label-primary, #1f2430); font-size: 13px; line-height: 1.5; -webkit-app-region: no-drag; contain: layout paint; }',
       '[' + VIEW_ATTR + '] * { box-sizing: border-box; }',
       'html[' + ACTIVE_ATTR + ']:not([data-dsh-tududi-active]):not([data-dsh-taskboard-active]):not([data-dsh-ssh-active]) [' + VIEW_ATTR + '] { display: flex; }',
       '[' + ENTRY_ATTR + '] { box-sizing: border-box; display: flex; align-items: center; gap: 8px; width: 100%; height: 36px; padding: 0 10px; background: transparent; border: none; border-radius: 8px; color: var(--dsw-alias-label-secondary, #6b7280); cursor: pointer; font-size: 13px; white-space: nowrap; transition: background .12s, color .12s; }',
@@ -68,6 +85,18 @@ window.__ModuleLoader__.load({
       '[' + ENTRY_ATTR + '] .dshTbLabel { overflow: hidden; text-overflow: ellipsis; }',
       "[data-dsh-frame][data-sidebar-collapsed] [" + ENTRY_ATTR + '], [data-sidebar-collapsed] [' + ENTRY_ATTR + '] { justify-content: center; padding: 0; width: 36px; height: 36px; margin: 0 auto 12px; border-radius: 50%; }',
       "[data-dsh-frame][data-sidebar-collapsed] [" + ENTRY_ATTR + '] .dshTbLabel, [data-sidebar-collapsed] [' + ENTRY_ATTR + '] .dshTbLabel { display: none; }',
+      // DSH hides a section header's TITLE when the rail collapses but leaves the
+      // 36px box and its 12px margin behind, so the region rail opens with a blank
+      // slot. It reads as "the Thunderbird icon wrapped to its own row" because our
+      // entry is the item directly above it — but hiding our entry does not remove
+      // the gap, and the box is measurably empty (36x35, zero text, all three of its
+      // children hidden by DSH's own collapsed styles). Icon centres in the
+      // collapsed rail: 48,48,48,48,48,48,48,96 — the 96 is that box.
+      //
+      // Collapsed-only and style-only: no DOM is touched, and in the collapsed rail
+      // a section header is an empty box by construction, so nothing visible is
+      // lost. Verified by counting visible icons before and after.
+      "[data-dsh-frame][data-sidebar-collapsed] [class*='_sectionHeader'], [data-sidebar-collapsed] [class*='_sectionHeader'] { display: none; }",
       '.dshTb-bar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; flex: none; border-bottom: 1px solid var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.22)); }',
       '.dshTb-brand { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--dsw-alias-label-secondary, #6b7280); }',
       '.dshTb-brandDot { width: 8px; height: 8px; border-radius: 50%; background: linear-gradient(135deg, #1d9bf0, #22d3ee); }',
