@@ -1123,6 +1123,326 @@ export function apply(ctx, config) {
     }
   }
 
+  // ------------------------------------------------------- 邮件名片（联系人）
+  //
+  // Every address seen in a message header becomes a durable contact card, and
+  // everyone on the same message is associated with everyone else, so a card can
+  // show who that person actually corresponds with.
+  //
+  // The card is keyed by the ADDRESS, not by the display name: the same person
+  // writes with several names, and two people never share an address. Names are
+  // therefore collected as variants with counts and the best one is chosen, which
+  // is what keeps "Iris Zhu" from being replaced by a signature-mangled variant on
+  // the next message.
+  const CONTACTS_PATH = join(STORE_DIR, 'contacts.json')
+  const contacts = { version: 1, list: {} }
+  let contactsLoaded = false
+  let contactsSaveTimer = null
+
+  const contactId = (address) => 'c_' + createHash('sha1')
+    .update(String(address || '').trim().toLowerCase())
+    .digest('hex').slice(0, 12)
+
+  // "Iris Zhu <a@b>" | "\"Zhu, Iris\" <a@b>" | "a@b" -> "a@b"
+  function addrOf (value) {
+    const text = String(value === undefined || value === null ? '' : value).trim()
+    if (!text) return ''
+    const angled = /<([^>]*)>/.exec(text)
+    const inner = angled ? angled[1] : text
+    const cleaned = inner.replace(/[\s"';,<>]+/g, '').toLowerCase()
+    if (cleaned.indexOf('@') < 1 || cleaned.indexOf('@') === cleaned.length - 1) return ''
+    return cleaned
+  }
+
+  // The display half of a header address, or '' — never invented from the local
+  // part. A made-up name is worse than no name: it looks authoritative and is not.
+  function displayOf (value) {
+    const text = String(value === undefined || value === null ? '' : value).trim()
+    if (!text) return ''
+    const angled = /^(.*?)<[^>]*>\s*$/.exec(text)
+    const raw = angled ? angled[1] : (/@/.test(text) ? '' : text)
+    return raw.replace(/^[\s"']+|[\s"']+$/g, '').replace(/\s+/g, ' ').trim()
+  }
+
+  const CJK = /[\u3400-\u9fff\u3040-\u30ff]/
+  const COMPOUND = ['欧阳', '司马', '上官', '诸葛', '东方', '皇甫', '尉迟', '公孙', '慕容',
+    '司徒', '令狐', '宇文', '长孙', '南宫', '独孤', '轩辕', '夏侯', '闻人', '贺兰', '澹台']
+
+  // 名字自动整理：中文按姓+名切（认复姓），西文按最后一段当姓。
+  function splitName (display) {
+    const name = String(display || '').trim()
+    if (!name) return { given: '', family: '' }
+    if (CJK.test(name)) {
+      for (let i = 0; i < COMPOUND.length; i++) {
+        if (name.indexOf(COMPOUND[i]) === 0) return { family: COMPOUND[i], given: name.slice(COMPOUND[i].length) }
+      }
+      return { family: name.slice(0, 1), given: name.slice(1) }
+    }
+    const parts = name.split(/\s+/).filter(Boolean)
+    if (parts.length <= 1) return { given: parts[0] || '', family: '' }
+    return { given: parts.slice(0, -1).join(' '), family: parts[parts.length - 1] }
+  }
+
+  async function loadContacts () {
+    if (contactsLoaded) return
+    contactsLoaded = true
+    try {
+      const parsed = JSON.parse(await readFile(CONTACTS_PATH, 'utf8'))
+      if (parsed && parsed.list && typeof parsed.list === 'object') contacts.list = parsed.list
+    } catch (error) { /* first run */ }
+  }
+
+  function saveContactsSoon () {
+    if (contactsSaveTimer !== null) return
+    contactsSaveTimer = setTimeout(async () => {
+      contactsSaveTimer = null
+      try {
+        await mkdir(STORE_DIR, { recursive: true })
+        await writeFile(CONTACTS_PATH, JSON.stringify({ version: 1, list: contacts.list }), 'utf8')
+      } catch (error) { console.error('[dsh-thunderbird] contacts save failed: ' + err(error)) }
+    }, 1500)
+    if (contactsSaveTimer && typeof contactsSaveTimer.unref === 'function') contactsSaveTimer.unref()
+  }
+
+  // Choose the display name from the variants seen so far: most frequent wins, and
+  // a tie goes to the longer one, which is almost always the fuller form
+  // ("Iris Zhu" over "Iris"). A hand-edited card is never touched.
+  function applyAutoName (card) {
+    if (card.edited && card.display) return
+    let best = ''
+    let bestCount = -1
+    const keys = Object.keys(card.names || {})
+    for (let i = 0; i < keys.length; i++) {
+      const count = card.names[keys[i]] || 0
+      if (count > bestCount || (count === bestCount && keys[i].length > best.length)) {
+        best = keys[i]
+        bestCount = count
+      }
+    }
+    if (!best) return
+    card.display = best
+    if (!card.given && !card.family) {
+      const parts = splitName(best)
+      card.given = parts.given || ''
+      card.family = parts.family || ''
+    }
+  }
+
+  function ensureCard (address) {
+    const id = contactId(address)
+    let card = contacts.list[id]
+    if (!card) {
+      card = contacts.list[id] = {
+        id: id,
+        emails: [address],
+        names: {},
+        display: '', given: '', family: '', courtesy: '',
+        company: '', title: '', phone: '', note: '', tags: [],
+        accounts: [], peers: {},
+        avatar: { kind: 'auto' },
+        firstSeen: Date.now(), lastSeen: 0, seen: 0,
+        edited: false,
+      }
+    }
+    return card
+  }
+
+  // One message -> cards for the author and every recipient, plus a peer edge
+  // between all of them. `accountId` decides which account a card belongs to, and
+  // that is what the composer's suggestions filter on.
+  function harvestMessages (messages, accountId) {
+    const list = Array.isArray(messages) ? messages : []
+    let touched = 0
+    for (let m = 0; m < list.length; m++) {
+      const header = list[m] || {}
+      const raw = [header.author].concat(header.recipients || [])
+      const seenHere = []
+      for (let r = 0; r < raw.length; r++) {
+        const address = addrOf(raw[r])
+        if (!address || seenHere.indexOf(address) >= 0) continue
+        seenHere.push(address)
+        const card = ensureCard(address)
+        card.seen += 1
+        card.lastSeen = Math.max(card.lastSeen, Number(header.date) || Date.now())
+        const display = displayOf(raw[r])
+        if (display) card.names[display] = (card.names[display] || 0) + 1
+        if (accountId && card.accounts.indexOf(accountId) < 0) card.accounts.push(accountId)
+        touched += 1
+      }
+      // 收发件人关联: everyone on this message is related to everyone else on it.
+      for (let a = 0; a < seenHere.length; a++) {
+        const card = contacts.list[contactId(seenHere[a])]
+        if (!card) continue
+        for (let b = 0; b < seenHere.length; b++) {
+          if (a === b) continue
+          card.peers[seenHere[b]] = (card.peers[seenHere[b]] || 0) + 1
+        }
+      }
+      for (let k = 0; k < seenHere.length; k++) applyAutoName(contacts.list[contactId(seenHere[k])])
+    }
+    if (touched) saveContactsSoon()
+    return touched
+  }
+
+  const contactsArray = () => Object.keys(contacts.list).map((id) => contacts.list[id])
+  const contactSortKey = (c) => String((c.display || c.emails[0] || '')).toLowerCase()
+
+  const contactsListHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    await loadContacts()
+    const accountId = String(param(req.url, 'accountId') || '')
+    const query = String(param(req.url, 'q') || '').trim().toLowerCase()
+    let list = contactsArray()
+    if (accountId) list = list.filter((c) => (c.accounts || []).indexOf(accountId) >= 0)
+    if (query) {
+      list = list.filter((c) => {
+        if (String(c.display || '').toLowerCase().indexOf(query) >= 0) return true
+        if (String(c.given || '').toLowerCase().indexOf(query) >= 0) return true
+        if (String(c.family || '').toLowerCase().indexOf(query) >= 0) return true
+        if (String(c.courtesy || '').toLowerCase().indexOf(query) >= 0) return true
+        if (String(c.company || '').toLowerCase().indexOf(query) >= 0) return true
+        return (c.emails || []).some((e) => e.indexOf(query) >= 0)
+      })
+    }
+    list.sort((a, b) => (b.seen || 0) - (a.seen || 0) || contactSortKey(a).localeCompare(contactSortKey(b)))
+    const limit = Math.max(1, Math.min(Number(param(req.url, 'limit')) || 400, 2000))
+    sendJson(res, 200, {
+      ok: true,
+      total: contactsArray().length,
+      shown: Math.min(list.length, limit),
+      list: list.slice(0, limit).map((c) => ({
+        id: c.id, display: c.display, emails: c.emails, company: c.company,
+        accounts: c.accounts, seen: c.seen, lastSeen: c.lastSeen, edited: c.edited,
+        avatar: c.avatar, hasName: !!c.display,
+      })),
+    })
+  }
+
+  const contactsGetHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    await loadContacts()
+    const id = String(param(req.url, 'id') || '')
+    const card = contacts.list[id]
+    if (!card) { sendJson(res, 200, { ok: false, error: 'unknown contact' }); return }
+    // Resolve the peer associations into something renderable: who this person
+    // actually appears on messages with, most often first.
+    const peers = Object.keys(card.peers || {}).map((address) => {
+      const other = contacts.list[contactId(address)]
+      return {
+        address: address,
+        name: other ? (other.display || '') : '',
+        count: card.peers[address],
+        id: contactId(address),
+      }
+    }).sort((a, b) => b.count - a.count).slice(0, 40)
+    sendJson(res, 200, { ok: true, contact: card, peers: peers })
+  }
+
+  const contactsSaveHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    const id = String((input && input.id) || '')
+    if (!id) { sendJson(res, 400, { ok: false, error: 'expected {id, patch}' }); return }
+    await loadContacts()
+    const card = contacts.list[id]
+    if (!card) { sendJson(res, 404, { ok: false, error: 'unknown contact' }); return }
+    const patch = (input && input.patch) || {}
+    const textFields = ['display', 'given', 'family', 'courtesy', 'company', 'title', 'phone', 'note']
+    for (let i = 0; i < textFields.length; i++) {
+      const key = textFields[i]
+      if (typeof patch[key] === 'string') card[key] = patch[key].trim()
+    }
+    if (Array.isArray(patch.tags)) card.tags = patch.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 20)
+    if (patch.avatar && typeof patch.avatar === 'object') {
+      const kind = String(patch.avatar.kind || 'auto')
+      // A data URL is the only shape stored inline; everything else is a reference.
+      // Capped, because a card file that grows without bound is a bad file.
+      if (kind === 'data') {
+        const value = String(patch.avatar.value || '')
+        if (value.indexOf('data:image/') !== 0 || value.length > 400000) {
+          sendJson(res, 400, { ok: false, error: '头像数据过大或不是图片' })
+          return
+        }
+        card.avatar = { kind: 'data', value: value }
+      } else if (kind === 'url') {
+        const value = String(patch.avatar.value || '').trim()
+        card.avatar = value ? { kind: 'url', value: value } : { kind: 'auto' }
+      } else {
+        card.avatar = { kind: 'auto' }
+      }
+    }
+    // An explicit edit is authoritative from now on: applyAutoName must never
+    // overwrite what a person typed.
+    card.edited = true
+    card.updatedAt = Date.now()
+    saveContactsSoon()
+    sendJson(res, 200, { ok: true, contact: card })
+  }
+
+  const contactsDeleteHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    const id = String((input && input.id) || '')
+    await loadContacts()
+    if (!contacts.list[id]) { sendJson(res, 404, { ok: false, error: 'unknown contact' }); return }
+    delete contacts.list[id]
+    saveContactsSoon()
+    sendJson(res, 200, { ok: true })
+  }
+
+  const contactsHarvestHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    await loadContacts()
+    const before = contactsArray().length
+    const touched = harvestMessages((input && input.messages) || [], String((input && input.accountId) || ''))
+    const after = contactsArray().length
+    sendJson(res, 200, { ok: true, touched: touched, created: after - before, total: after })
+  }
+
+  const contactsSuggestHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    await loadContacts()
+    const accountId = String(param(req.url, 'accountId') || '')
+    const query = String(param(req.url, 'q') || '').trim().toLowerCase()
+    const limit = Math.max(1, Math.min(Number(param(req.url, 'limit')) || 8, 40))
+    // 只候选和当前账号关联的 —— a contact belongs to an account when mail for it
+    // was actually seen in that account. A missing accountId yields NOTHING rather
+    // than the whole book: a caller that forgets the account must not leak every
+    // address into a composer.
+    if (!accountId) { sendJson(res, 200, { ok: true, list: [] }); return }
+    let list = contactsArray().filter((c) => (c.accounts || []).indexOf(accountId) >= 0)
+    if (query) {
+      const scored = []
+      for (let i = 0; i < list.length; i++) {
+        const c = list[i]
+        const name = String(c.display || '').toLowerCase()
+        const mail = (c.emails || []).join(' ').toLowerCase()
+        let score = -1
+        if (name.indexOf(query) === 0) score = 0
+        else if (name.indexOf(query) > 0) score = 1
+        else if (mail.indexOf(query) === 0) score = 2
+        else if (mail.indexOf(query) > 0) score = 3
+        else if (String(c.company || '').toLowerCase().indexOf(query) >= 0) score = 4
+        if (score >= 0) scored.push({ c: c, score: score })
+      }
+      scored.sort((a, b) => a.score - b.score || (b.c.seen || 0) - (a.c.seen || 0))
+      list = scored.map((s) => s.c)
+    } else {
+      list = list.slice().sort((a, b) => (b.seen || 0) - (a.seen || 0))
+    }
+    sendJson(res, 200, {
+      ok: true,
+      list: list.slice(0, limit).map((c) => ({
+        id: c.id, display: c.display, email: (c.emails || [])[0] || '',
+        company: c.company, seen: c.seen, avatar: c.avatar,
+      })),
+    })
+  }
+
   // ------------------------------------------------------------- 邮件记忆库 (P1)
   //
   // Selected mail folders are written out as ONE Markdown file per mail, so that
@@ -1394,6 +1714,12 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/detach', sessionDetachHandler],
     ['/api/thunderbird/kb/export', kbExportHandler],
     ['/api/thunderbird/kb/status', kbStatusHandler],
+    ['/api/thunderbird/contacts/list', contactsListHandler],
+    ['/api/thunderbird/contacts/get', contactsGetHandler],
+    ['/api/thunderbird/contacts/save', contactsSaveHandler],
+    ['/api/thunderbird/contacts/delete', contactsDeleteHandler],
+    ['/api/thunderbird/contacts/harvest', contactsHarvestHandler],
+    ['/api/thunderbird/contacts/suggest', contactsSuggestHandler],
     ['/api/thunderbird/settings', settingsGetHandler],
     ['/api/thunderbird/settings/set', settingsSetHandler],
     ['/api/thunderbird/session/file', sessionFileHandler],

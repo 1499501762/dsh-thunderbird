@@ -352,6 +352,102 @@ check('reset restores every default',
   reset.settings.kbRoot === defaults.settings.kbRoot && reset.settings.kbLimit === 50 &&
   reset.settings.sensitivity === 'private', JSON.stringify(reset.settings))
 
+// ---- 邮件名片（联系人） ------------------------------------------------------
+// The harvest input is exactly what the panel already holds after a list load, so
+// this costs no extra bridge round trips.
+const harvested = await post('/api/thunderbird/contacts/harvest', {
+  accountId: 'account1',
+  messages: [
+    {
+      author: '"Iris Zhu" <iriszhu@targotools.cn>',
+      recipients: ['"吴琴叶" <wuqinye@prefollow.com>', 'iriszhu@targotools.cn'],
+      date: 1789000000000,
+    },
+    {
+      author: 'Iris Zhu <iriszhu@targotools.cn>',
+      recipients: ['Jenny Wu <wuqinye@prefollow.com>'],
+      date: 1789000001000,
+    },
+    {
+      // Same person, a mangled variant of the name: the fuller form must win.
+      author: 'iris <iriszhu@targotools.cn>',
+      recipients: ['wuqinye@prefollow.com'],
+      date: 1789000002000,
+    },
+  ],
+})
+check('contacts/harvest creates one card per address', harvested && harvested.ok === true && harvested.created === 2,
+  JSON.stringify(harvested))
+// Each message touches each DISTINCT address on it once — three messages with two
+// distinct addresses each is 6, and the duplicate recipient in message 1 is folded
+// into the author's own card rather than counted twice.
+check('harvest counts each address once per message', harvested && harvested.touched === 6,
+  String(harvested && harvested.touched))
+
+const all = await get('/api/thunderbird/contacts/list')
+check('contacts/list returns the book', all && all.ok === true && all.total === 2, String(all && all.total))
+const iris = (all.list || []).find((c) => (c.emails || [])[0] === 'iriszhu@targotools.cn')
+const wu = (all.list || []).find((c) => (c.emails || [])[0] === 'wuqinye@prefollow.com')
+check('auto-naming picks the fuller variant', iris && iris.display === 'Iris Zhu', iris && iris.display)
+
+const irisFull = await get('/api/thunderbird/contacts/get?id=' + (iris ? iris.id : ''))
+check('contacts/get resolves the card', irisFull && irisFull.ok === true && irisFull.contact.emails.length === 1)
+// 名字自动整理：西文按最后一段当姓；中文姓在前。
+check('western name split', irisFull.contact.given === 'Iris' && irisFull.contact.family === 'Zhu',
+  irisFull.contact.given + ' / ' + irisFull.contact.family)
+const wuFull = await get('/api/thunderbird/contacts/get?id=' + (wu ? wu.id : ''))
+check('CJK name split uses the leading surname', wuFull.contact.family === '吴' && wuFull.contact.given === '琴叶',
+  wuFull.contact.family + ' / ' + wuFull.contact.given)
+// 收发件人关联: they shared a message, so each lists the other.
+check('reciprocal peer association is recorded',
+  (irisFull.peers || []).some((p) => p.address === 'wuqinye@prefollow.com') &&
+  (wuFull.peers || []).some((p) => p.address === 'iriszhu@targotools.cn'),
+  JSON.stringify((irisFull.peers || []).map((p) => p.address + ':' + p.count)))
+
+// 只候选和当前账号关联的
+const suggest1 = await get('/api/thunderbird/contacts/suggest?accountId=account1&q=iris')
+check('suggest honours the account filter',
+  suggest1 && suggest1.list.length === 1 && suggest1.list[0].email === 'iriszhu@targotools.cn',
+  JSON.stringify(suggest1 && suggest1.list))
+const suggestOther = await get('/api/thunderbird/contacts/suggest?accountId=account9&q=iris')
+check('suggest returns NOTHING for an unrelated account', suggestOther && suggestOther.list.length === 0,
+  JSON.stringify(suggestOther && suggestOther.list))
+const suggestNone = await get('/api/thunderbird/contacts/suggest?q=iris')
+check('suggest with no account yields nothing, never the whole book', suggestNone && suggestNone.list.length === 0)
+
+// A hand edit must survive later harvesting, or auto-naming quietly reverts the
+// user's own corrections on the next list load.
+const saved = await post('/api/thunderbird/contacts/save', {
+  id: iris.id,
+  patch: { display: '朱小姐', courtesy: '字·以宁', company: 'TARGO TOOLS', title: 'Sr. Account Executive' },
+})
+check('contacts/save stores the edit', saved && saved.ok === true && saved.contact.display === '朱小姐',
+  saved && saved.contact && saved.contact.display)
+check('the edit marks the card as edited', saved.contact.edited === true)
+await post('/api/thunderbird/contacts/harvest', {
+  accountId: 'account1',
+  messages: [{ author: 'Iris Zhu <iriszhu@targotools.cn>', recipients: [], date: 1789000009000 }],
+})
+const afterEdit = await get('/api/thunderbird/contacts/get?id=' + iris.id)
+check('auto-naming never overwrites a hand edit',
+  afterEdit.contact.display === '朱小姐' && afterEdit.contact.courtesy === '字·以宁', afterEdit.contact.display)
+
+const badAvatar = await post('/api/thunderbird/contacts/save', {
+  id: iris.id,
+  patch: { avatar: { kind: 'data', value: 'data:image/png;base64,' + 'A'.repeat(500000) } },
+})
+check('an oversized avatar is rejected rather than stored', badAvatar && badAvatar.ok === false,
+  JSON.stringify(badAvatar).slice(0, 90))
+const goodAvatar = await post('/api/thunderbird/contacts/save', {
+  id: iris.id,
+  patch: { avatar: { kind: 'data', value: 'data:image/png;base64,iVBORw0KGgo=' } },
+})
+check('a small avatar is accepted', goodAvatar && goodAvatar.ok === true && goodAvatar.contact.avatar.kind === 'data')
+
+const cardGone = await post('/api/thunderbird/contacts/delete', { id: wu.id })
+const afterDelete = await get('/api/thunderbird/contacts/list')
+check('contacts/delete removes one card', cardGone.ok === true && afterDelete.total === 1, String(afterDelete.total))
+
 mock.kill()
 server.close()
 await rm(home, { recursive: true, force: true })

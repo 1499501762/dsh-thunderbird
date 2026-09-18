@@ -459,8 +459,7 @@
   .item .date { font-size: 10.5px; opacity: .85; }
   .item .subject { font-size: 12.5px; margin-top: 3px; }
   .thread-head {
-    background: color-mix(in srgb, var(--tb-bg-1) 92%, transparent);
-    backdrop-filter: blur(8px);
+    background: var(--tb-bg);
     border-bottom: 1px solid var(--tb-border);
     padding: 10px 13px;
     font-size: 12.5px;
@@ -563,9 +562,8 @@
     z-index: -1;
     pointer-events: none;
     background:
-      radial-gradient(1150px 620px at 6% -14%, color-mix(in srgb, var(--tb-accent) 22%, transparent), transparent 62%),
-      radial-gradient(900px 520px at 106% 2%, color-mix(in srgb, var(--tb-accent) 11%, transparent), transparent 60%),
-      radial-gradient(1000px 760px at 48% 120%, color-mix(in srgb, var(--tb-text) 6%, transparent), transparent 64%),
+      radial-gradient(1100px 600px at 4% -16%, color-mix(in srgb, var(--tb-text) 5%, transparent), transparent 62%),
+      radial-gradient(880px 500px at 104% 4%, color-mix(in srgb, var(--tb-text) 3%, transparent), transparent 60%),
       var(--tb-bg-1);
   }
   .app::after {
@@ -574,7 +572,7 @@
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    opacity: .38;
+    opacity: .16;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
   }
   .bar, .foot {
@@ -601,10 +599,15 @@
     -webkit-backdrop-filter: var(--tb-glass-blur-strong);
     border-bottom-color: var(--tb-glass-line);
   }
+  /* A list ROW is not a floating surface. It used to carry a backdrop-filter,
+     which is both expensive (one blur per row, and a long list is dozens of
+     them) and the actual mechanism behind the unstable unread row: an element
+     with a backdrop-filter AND a translucent background composites through a
+     different path than a plain translucent fill, so the same 12% tint came out
+     as a solid bar in one build and a pale one in another. Rows now paint a flat,
+     opaque colour and are left alone. */
   .thread-head {
-    background: var(--tb-glass-1);
-    backdrop-filter: var(--tb-glass-blur);
-    -webkit-backdrop-filter: var(--tb-glass-blur);
+    background: var(--tb-bg);
     border-bottom-color: var(--tb-glass-line);
   }
   .ai, #rules, #sessions, .compose {
@@ -936,6 +939,44 @@
   .kb-done { color: var(--tb-ok); }
   .kb-fail { color: var(--tb-err); }
 
+  /* ---------- 邮件名片 ---------- */
+  .card-body { display: flex; gap: 0; padding: 0 !important; min-height: 0; }
+  .card-list { width: 300px; flex: none; overflow: auto; border-right: 1px solid var(--tb-glass-line); padding: 8px; }
+  .card-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: var(--tb-r-md); cursor: pointer; }
+  .card-row:hover { background: var(--tb-hover); }
+  .card-row.on { background: color-mix(in srgb, var(--tb-accent) 14%, transparent); }
+  .card-row .cr-main { min-width: 0; }
+  .card-row .cr-name { font-size: 13px; color: var(--tb-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-row .cr-name.noname { color: var(--tb-text-dim); font-style: italic; }
+  .card-row .cr-sub { font-size: 11px; color: var(--tb-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-av { width: 30px; height: 30px; flex: none; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; }
+  .card-av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card-edit { flex: 1 1 auto; overflow: auto; padding: 14px 16px; min-width: 0; }
+  .card-empty { color: var(--tb-text-dim); font-size: 13px; padding: 30px 0; text-align: center; }
+  .card-avatar-row { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
+  .card-avatar { width: 64px; height: 64px; border-radius: 50%; overflow: hidden; flex: none; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 700; color: #fff; }
+  .card-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .card-avatar-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+  .card-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 14px; }
+  .card-fields label, .card-avatar-row label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--tb-text-dim); }
+  .card-fields label.wide { grid-column: 1 / -1; }
+  .card-fields .input { font-size: 12.5px; }
+  .card-sub { font-size: 11px; color: var(--tb-text-dim); margin: 14px 0 6px; }
+  .card-peers { margin-top: 4px; }
+  .peer-chip { display: inline-flex; align-items: center; gap: 5px; margin: 0 6px 6px 0; padding: 3px 9px; border-radius: 999px; background: var(--tb-bg-2); font-size: 11.5px; cursor: pointer; }
+  .peer-chip:hover { background: var(--tb-bg-3); }
+  .peer-chip b { color: var(--tb-accent); font-weight: 600; }
+  .card-acct { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--tb-text-dim); white-space: nowrap; }
+  .card-actions { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--tb-glass-line); }
+  /* Address autocomplete in the composer. */
+  .ac-pop { position: fixed; z-index: 320; min-width: 220px; max-width: 420px; max-height: 260px; overflow: auto; border-radius: var(--tb-r-md); border: 1px solid var(--tb-glass-line); background: var(--tb-overlay, var(--tb-bg-1)); box-shadow: var(--tb-shadow); padding: 4px; }
+  .ac-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; cursor: pointer; }
+  .ac-row.on, .ac-row:hover { background: var(--tb-hover); }
+  .ac-row .ac-name { font-size: 12.5px; }
+  .ac-row .ac-mail { font-size: 11px; color: var(--tb-text-dim); margin-left: auto; }
+  .ac-av { width: 22px; height: 22px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 700; color: #fff; overflow: hidden; }
+  .ac-av img { width: 100%; height: 100%; object-fit: cover; }
+
   /* ---------- 设置 ---------- */
   .set-sec { margin: 16px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .04em;
              text-transform: uppercase; color: var(--tb-text-dim);
@@ -1008,8 +1049,16 @@
   }
 
   /* ---------- unread threads, judged by the newest message ---------- */
+  /* Mixed with an OPAQUE base, not with `transparent`.
+     `color-mix(accent 12%, transparent)` gives a 12%-alpha blue, which is a hole
+     in the list rather than a surface: whatever is stacked behind it shows
+     through, and with a backdrop-filter on the same element the composited result
+     is not the 12% anyone intended (it rendered as a solid blue bar in one build
+     and a near-white one in another — same 12%, same element). Mixing against an
+     opaque colour removes the transparency entirely, so there is no stack left to
+     go wrong and the row is a stable dark surface with a blue cast. */
   .thread-head.unread {
-    background: color-mix(in srgb, var(--tb-accent) 12%, transparent);
+    background: color-mix(in srgb, var(--tb-accent) 12%, var(--tb-bg));
     box-shadow: inset 3px 0 0 var(--tb-accent);
   }
   .thread-head.unread .thread-subject { color: var(--tb-accent); font-weight: 700; }
@@ -1163,7 +1212,12 @@
     --tb-glass-1: color-mix(in srgb, var(--tb-bg-1) 66%, transparent);
     --tb-glass-2: color-mix(in srgb, var(--tb-bg-2) 64%, transparent);
   }
-  .toast, .att-chip, .thread-count, .chip, .code, .progress, .chat-msg.user, .selmenu button:hover {
+  /* `.thread-count` used to be in this list, and it is the clearest example of the
+     stacking problem: one blurred pill PER ROW — 49 of them on a real mailbox. Each
+     one sat on an opaque row, so it blurred nothing at all; it just added 49
+     composited layers. Blur is only worth paying for where something actually
+     passes underneath. */
+  .toast, .att-chip, .chip, .code, .progress, .chat-msg.user, .selmenu button:hover {
     backdrop-filter: var(--tb-glass-blur);
     -webkit-backdrop-filter: var(--tb-glass-blur);
   }
@@ -1187,6 +1241,7 @@
     <button class="btn" id="btn-sessions" data-overflow="1">会话</button>
     <button class="btn" id="btn-signatures" data-overflow="1">签名</button>
     <button class="btn" id="btn-kb" data-overflow="1" title="把选中的邮件文件夹导出成 Markdown，交给灵枢建成知识库">记忆库</button>
+    <button class="btn" id="btn-cards" data-overflow="1" title="收发件人名片：自动归档、关联、编辑">名片</button>
     <button class="btn" id="btn-set" data-overflow="1" title="插件设置">设置</button>
     <button class="btn" id="btn-group" data-overflow="1" title="按主题聚合">聚合</button>
     <button class="btn" id="btn-more" hidden title="更多">⋯</button>
@@ -1414,6 +1469,56 @@
       </div>
 
       <div class="set-progress" id="set-note" hidden></div>
+    </div>
+  </div>
+
+  <div class="ai" id="cardwin" hidden>
+    <div class="ai-head">
+      <span class="ai-title">邮件名片</span>
+      <span class="ai-model" id="card-count"></span>
+      <span class="grow"></span>
+      <input class="input" id="card-search" placeholder="搜索 姓名 / 邮箱 / 公司…" style="width:190px">
+      <label class="card-acct"><input type="checkbox" id="card-onlyacct" checked>只看当前账号</label>
+      <button class="btn" id="card-close">关闭</button>
+    </div>
+    <div class="ai-body card-body">
+      <div class="card-list" id="card-list"></div>
+      <div class="card-edit" id="card-edit">
+        <div class="card-empty" id="card-empty">从左边选一张名片来编辑</div>
+        <div class="card-form" id="card-form" hidden>
+          <div class="card-avatar-row">
+            <div class="card-avatar" id="card-avatar"></div>
+            <div class="card-avatar-actions">
+              <button class="btn" id="card-avatar-file">选图片…</button>
+              <button class="btn" id="card-avatar-url">用图片地址</button>
+              <button class="btn" id="card-avatar-auto">恢复首字母</button>
+              <input type="file" id="card-avatar-input" accept="image/*" hidden>
+            </div>
+          </div>
+          <div class="card-fields">
+            <label>名<input class="input" id="cf-display" placeholder="显示名，如 Iris Zhu"></label>
+            <label>姓<input class="input" id="cf-family"></label>
+            <label>名（first）<input class="input" id="cf-given"></label>
+            <label>字<input class="input" id="cf-courtesy" placeholder="如 以宁"></label>
+            <label>邮箱<input class="input" id="cf-emails" readonly></label>
+            <label>公司<input class="input" id="cf-company"></label>
+            <label>职务<input class="input" id="cf-title"></label>
+            <label>电话<input class="input" id="cf-phone"></label>
+            <label class="wide">备注<textarea class="input" id="cf-note" rows="2"></textarea></label>
+            <label class="wide">标签<input class="input" id="cf-tags" placeholder="逗号分隔"></label>
+          </div>
+          <div class="card-peers">
+            <div class="card-sub">常一起收发的人</div>
+            <div id="card-peers"></div>
+          </div>
+          <div class="card-actions">
+            <span class="meta" id="card-status"></span>
+            <span class="grow"></span>
+            <button class="btn" id="card-delete">删除名片</button>
+            <button class="btn primary" id="card-save">保存</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2652,11 +2757,36 @@ function loadMessages (force) {
     saveFolderLists()
     setError('')
     render()
+    harvestContacts(state.messages)
   }).catch(function (error) {
     state.messages = []
     setError(error.message)
     render()
   })
+}
+
+// 自动存名片 ——每加载一页邮件就把收发件人交给 host 归档。
+//
+// The panel is the only side that knows WHICH account a folder belongs to, and that
+// association is what the composer's suggestions filter on, so the harvest is driven
+// from here rather than from the host's list path. Fire and forget: a failure must
+// never disturb reading mail, and the next list load will try again.
+function harvestContacts (messages) {
+  if (!messages || !messages.length) return
+  var folder = null
+  for (var i = 0; i < state.folders.length; i++) if (state.folders[i].id === state.folderId) folder = state.folders[i]
+  var accountId = folder ? (folder.accountId || '') : ''
+  if (!accountId) return
+  var slim = []
+  for (var m = 0; m < messages.length; m++) {
+    slim.push({
+      author: messages[m].author || '',
+      recipients: messages[m].recipients || [],
+      date: messages[m].date || 0,
+    })
+  }
+  postJson('/api/thunderbird/contacts/harvest', { accountId: accountId, messages: slim })
+    .catch(function () { /* reading mail must not depend on the address book */ })
 }
 
 function selectFolder (id) {
@@ -2850,6 +2980,7 @@ function runSearch () {
 }
 
 function startCompose (message) {
+  bindComposeAutocomplete()
   $('compose').hidden = false
   setNotice('')
   if (message) {
@@ -6271,6 +6402,322 @@ function kbSession (title, prompt, okMessage) {
   }
 })()
 
+// ------------------------------------------------------------------ 邮件名片
+// The host owns the book (contacts.json); this side only renders and edits it.
+// Nothing here invents a name — an unnamed card shows its address in italics, so
+// "no name yet" is visibly different from "a name we made up".
+var cardState = { list: [], current: null, peers: [], onlyAccount: true, query: '' }
+
+// A stable colour per address so the same person always gets the same letter tile.
+function avatarTint (email) {
+  var hash = 0
+  var text = String(email || '')
+  for (var i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) >>> 0
+  var hues = [210, 265, 330, 12, 40, 95, 160, 190]
+  return 'hsl(' + hues[hash % hues.length] + ' 55% 42%)'
+}
+
+function initialOf (card) {
+  var name = String((card && card.display) || '').trim()
+  if (!name) name = String(((card && card.emails) || [])[0] || '?')
+  return name.slice(0, 1).toUpperCase()
+}
+
+function avatarHtml (card, cls) {
+  var av = (card && card.avatar) || { kind: 'auto' }
+  if (av.kind === 'url' && av.value) return '<span class="' + cls + '" style="background:' + avatarTint((card.emails || [])[0]) + '"><img src="' + escapeAttr(av.value) + '" alt=""></span>'
+  if (av.kind === 'data' && av.value) return '<span class="' + cls + '"><img src="' + escapeAttr(av.value) + '" alt=""></span>'
+  return '<span class="' + cls + '" style="background:' + avatarTint((card.emails || [])[0]) + '">' + escapeHtml(initialOf(card)) + '</span>'
+}
+
+function currentAccountId () {
+  for (var i = 0; i < state.folders.length; i++) if (state.folders[i].id === state.folderId) return state.folders[i].accountId || ''
+  return ''
+}
+
+function loadCards () {
+  var query = '?limit=500'
+  // 只候选和当前账号关联的：the same filter the composer uses, so the list shows
+  // exactly the people who can be suggested while writing from this account.
+  if (cardState.onlyAccount) {
+    var accountId = currentAccountId()
+    if (accountId) query += '&accountId=' + encodeURIComponent(accountId)
+  }
+  if (cardState.query) query += '&q=' + encodeURIComponent(cardState.query)
+  return fetch('/api/thunderbird/contacts/list' + query, { cache: 'no-store' })
+    .then(function (r) { return r.json() })
+    .then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '读取失败')
+      cardState.list = out.list || []
+      $('card-count').textContent = cardState.list.length + ' / ' + out.total + ' 张'
+      renderCardList()
+    })
+    .catch(function (error) { setError('名片读取失败：' + String((error && error.message) || error)) })
+}
+
+function renderCardList () {
+  var host = $('card-list')
+  host.innerHTML = ''
+  if (!cardState.list.length) {
+    host.innerHTML = '<div class="card-empty">还没有名片。打开几个邮件文件夹，收发件人会自动归档。</div>'
+    return
+  }
+  for (var i = 0; i < cardState.list.length; i++) {
+    var card = cardState.list[i]
+    var row = document.createElement('div')
+    row.className = 'card-row' + (cardState.current && cardState.current.id === card.id ? ' on' : '')
+    row.innerHTML = avatarHtml(card, 'card-av')
+      + '<span class="cr-main"><span class="cr-name' + (card.hasName ? '' : ' noname') + '">'
+      + escapeHtml(card.display || (card.emails || [])[0] || '') + '</span>'
+      + '<span class="cr-sub">' + escapeHtml((card.emails || [])[0] || '')
+      + (card.company ? ' · ' + escapeHtml(card.company) : '') + '</span></span>'
+    row.onclick = (function (id) {
+      return function () { selectCard(id) }
+    })(card.id)
+    host.appendChild(row)
+  }
+}
+
+function selectCard (id) {
+  fetch('/api/thunderbird/contacts/get?id=' + encodeURIComponent(id), { cache: 'no-store' })
+    .then(function (r) { return r.json() })
+    .then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '读取失败')
+      cardState.current = out.contact
+      cardState.peers = out.peers || []
+      renderCardEditor()
+      renderCardList()
+    })
+    .catch(function (error) { setError('名片读取失败：' + String((error && error.message) || error)) })
+}
+
+function renderCardEditor () {
+  var card = cardState.current
+  $('card-empty').hidden = !!card
+  $('card-form').hidden = !card
+  if (!card) return
+  var av = $('card-avatar')
+  av.style.background = avatarTint((card.emails || [])[0])
+  var avSrc = (card.avatar && card.avatar.value) || ''
+  av.innerHTML = (card.avatar && card.avatar.kind !== 'auto' && avSrc)
+    ? '<img src="' + escapeAttr(avSrc) + '" alt="">'
+    : escapeHtml(initialOf(card))
+  $('cf-display').value = card.display || ''
+  $('cf-family').value = card.family || ''
+  $('cf-given').value = card.given || ''
+  $('cf-courtesy').value = card.courtesy || ''
+  $('cf-emails').value = (card.emails || []).join(', ')
+  $('cf-company').value = card.company || ''
+  $('cf-title').value = card.title || ''
+  $('cf-phone').value = card.phone || ''
+  $('cf-note').value = card.note || ''
+  $('cf-tags').value = (card.tags || []).join(', ')
+  $('card-status').textContent = card.edited
+    ? '已手工编辑（自动整理不会再覆盖）'
+    : '自动归档 · 见过 ' + (card.seen || 0) + ' 次'
+  var peers = $('card-peers')
+  peers.innerHTML = ''
+  if (!cardState.peers.length) {
+    peers.innerHTML = '<span class="meta">还没有关联记录</span>'
+  } else {
+    for (var i = 0; i < cardState.peers.length; i++) {
+      var p = cardState.peers[i]
+      var chip = document.createElement('span')
+      chip.className = 'peer-chip'
+      chip.innerHTML = escapeHtml(p.name || p.address) + ' <b>' + p.count + '</b>'
+      chip.title = p.address + ' · 同一封邮件里出现过 ' + p.count + ' 次'
+      chip.onclick = (function (peerId) {
+        return function () { selectCard(peerId) }
+      })(p.id)
+      peers.appendChild(chip)
+    }
+  }
+}
+
+;(function () {
+  if (!$('btn-cards')) return
+  $('btn-cards').onclick = function () {
+    if (!$('cardwin').hidden) { $('cardwin').hidden = true; return }
+    $('kbwin').hidden = true
+    $('rules').hidden = true
+    $('sessions').hidden = true
+    $('signatures').hidden = true
+    $('cardwin').hidden = false
+    loadCards()
+  }
+  $('card-close').onclick = function () { $('cardwin').hidden = true }
+  $('card-search').addEventListener('input', function () {
+    cardState.query = this.value.trim()
+    if (cardState.timer) clearTimeout(cardState.timer)
+    cardState.timer = setTimeout(loadCards, 220)
+  })
+  $('card-onlyacct').onchange = function () { cardState.onlyAccount = this.checked; loadCards() }
+  $('card-save').onclick = function () {
+    var card = cardState.current
+    if (!card) return
+    var patch = {
+      display: $('cf-display').value,
+      family: $('cf-family').value,
+      given: $('cf-given').value,
+      courtesy: $('cf-courtesy').value,
+      company: $('cf-company').value,
+      title: $('cf-title').value,
+      phone: $('cf-phone').value,
+      note: $('cf-note').value,
+      tags: $('cf-tags').value.split(',').map(function (t) { return t.trim() }).filter(Boolean),
+    }
+    postJson('/api/thunderbird/contacts/save', { id: card.id, patch: patch }).then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '保存失败')
+      cardState.current = out.contact
+      renderCardEditor()
+      loadCards()
+      setNotice('名片已保存')
+    }).catch(function (error) { setError('保存失败：' + String((error && error.message) || error)) })
+  }
+  $('card-delete').onclick = function () {
+    var card = cardState.current
+    if (!card) return
+    postJson('/api/thunderbird/contacts/delete', { id: card.id }).then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '删除失败')
+      cardState.current = null
+      renderCardEditor()
+      loadCards()
+      setNotice('名片已删除')
+    }).catch(function (error) { setError('删除失败：' + String((error && error.message) || error)) })
+  }
+  $('card-avatar-auto').onclick = function () { saveAvatar({ kind: 'auto' }) }
+  $('card-avatar-url').onclick = function () {
+    var url = window.prompt('图片地址（https://…）', '')
+    if (url === null) return
+    saveAvatar({ kind: 'url', value: url.trim() })
+  }
+  $('card-avatar-file').onclick = function () { $('card-avatar-input').click() }
+  $('card-avatar-input').onchange = function () {
+    var file = this.files && this.files[0]
+    this.value = ''
+    if (!file) return
+    // Downscale in the page before sending: the host caps what it will store, and a
+    // 4MB phone photo has no business in a contacts file.
+    var reader = new FileReader()
+    reader.onload = function () {
+      var img = new Image()
+      img.onload = function () {
+        var side = Math.max(img.width, img.height) || 1
+        var scale = Math.min(1, 192 / side)
+        var canvas = document.createElement('canvas')
+        canvas.width = Math.max(1, Math.round(img.width * scale))
+        canvas.height = Math.max(1, Math.round(img.height * scale))
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height)
+        saveAvatar({ kind: 'data', value: canvas.toDataURL('image/jpeg', 0.85) })
+      }
+      img.onerror = function () { setError('这张图片读不出来') }
+      img.src = String(reader.result)
+    }
+    reader.onerror = function () { setError('读取文件失败') }
+    reader.readAsDataURL(file)
+  }
+  function saveAvatar (avatar) {
+    var card = cardState.current
+    if (!card) return
+    postJson('/api/thunderbird/contacts/save', { id: card.id, patch: { avatar: avatar } }).then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '保存失败')
+      cardState.current = out.contact
+      renderCardEditor()
+      loadCards()
+      setNotice('头像已更新')
+    }).catch(function (error) { setError('头像保存失败：' + String((error && error.message) || error)) })
+  }
+})()
+
+// --------------------------------------------------- 撰写时的收件人自动候选
+// Only contacts tied to the account currently being written from are offered, which
+// is why accountId is mandatory here: the host answers an empty list without it
+// rather than every address in the book.
+function attachAutocomplete (input) {
+  if (!input || input.dataset.acBound) return
+  input.dataset.acBound = '1'
+  var pop = null
+  var rows = []
+  var active = -1
+
+  function close () {
+    if (pop) { pop.remove(); pop = null }
+    rows = []
+    active = -1
+  }
+  function currentToken () {
+    var value = String(input.value || '')
+    var at = value.lastIndexOf(',')
+    return value.slice(at + 1).trim()
+  }
+  function accept (row) {
+    var value = String(input.value || '')
+    var at = value.lastIndexOf(',')
+    var head = at >= 0 ? value.slice(0, at + 1) + ' ' : ''
+    input.value = head + (row.display ? row.display + ' <' + row.email + '>' : row.email) + ', '
+    close()
+    input.focus()
+    if (typeof syncComposeOptional === 'function') syncComposeOptional()
+  }
+  function paint () {
+    if (!pop) return
+    for (var i = 0; i < rows.length; i++) rows[i].classList.toggle('on', i === active)
+  }
+  function render (list) {
+    close()
+    if (!list.length) return
+    pop = document.createElement('div')
+    pop.className = 'ac-pop'
+    var rect = input.getBoundingClientRect()
+    pop.style.left = Math.round(rect.left) + 'px'
+    pop.style.top = Math.round(rect.bottom + 4) + 'px'
+    pop.style.minWidth = Math.round(rect.width) + 'px'
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i]
+      var row = document.createElement('div')
+      row.className = 'ac-row'
+      row.innerHTML = avatarHtml({ emails: [item.email], display: item.display, avatar: item.avatar }, 'ac-av')
+        + '<span class="ac-name">' + escapeHtml(item.display || item.email) + '</span>'
+        + '<span class="ac-mail">' + escapeHtml(item.email) + '</span>'
+      row.onmousedown = (function (entry) {
+        return function (event) { event.preventDefault(); accept(entry) }
+      })(item)
+      pop.appendChild(row)
+      rows.push(row)
+    }
+    document.body.appendChild(pop)
+    active = 0
+    paint()
+  }
+
+  input.addEventListener('input', function () {
+    var token = currentToken()
+    var accountId = currentAccountId()
+    if (!accountId) { close(); return }
+    // A complete address is already a choice; only suggest while it is still a name
+    // or a partial address.
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(token)) { close(); return }
+    fetch('/api/thunderbird/contacts/suggest?accountId=' + encodeURIComponent(accountId)
+      + '&q=' + encodeURIComponent(token) + '&limit=8', { cache: 'no-store' })
+      .then(function (r) { return r.json() })
+      .then(function (out) { if (out && out.ok) render(out.list || []) })
+      .catch(function () { close() })
+  })
+  input.addEventListener('keydown', function (event) {
+    if (!pop || !rows.length) return
+    if (event.key === 'ArrowDown') { active = (active + 1) % rows.length; paint(); event.preventDefault() }
+    else if (event.key === 'ArrowUp') { active = (active - 1 + rows.length) % rows.length; paint(); event.preventDefault() }
+    else if (event.key === 'Enter' || event.key === 'Tab') { accept(rows[active === -1 ? 0 : active]); event.preventDefault() }
+    else if (event.key === 'Escape') { close(); event.preventDefault() }
+  })
+  input.addEventListener('blur', function () { setTimeout(close, 120) })
+}
+
+function bindComposeAutocomplete () {
+  attachAutocomplete($('c-to'))
+  attachAutocomplete($('c-cc'))
+}
+
 function renderSessions () {
   $('sess-count').textContent = state.sessions.list.length
     ? state.sessions.list.length + ' 条邮件线'
@@ -6692,6 +7139,12 @@ function setSigEditor (html) {
 function escapeHtml (value) {
   return String(value === undefined || value === null ? '' : value)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// For values going into an ATTRIBUTE. escapeHtml does not touch quotes, so a URL
+// containing one would close the attribute and inject markup.
+function escapeAttr (value) {
+  return escapeHtml(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
 // Signature images live on local disk (D:\Logo\…), and a file:// URL cannot load
