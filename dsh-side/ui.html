@@ -322,7 +322,7 @@
   .chat-status.err { color: var(--tb-err); }
   .chat-log { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; margin-bottom: 9px; }
   .chat-msg { border-radius: var(--tb-r-md); padding: 8px 10px; font-size: 12.5px; line-height: 1.72; white-space: pre-wrap; word-break: break-word; }
-  .chat-msg.user { background: color-mix(in srgb, var(--tb-accent) 13%, transparent); }
+  .chat-msg.user { background: color-mix(in srgb, var(--tb-accent) 13%, var(--tb-bg)); }
   .chat-msg.assistant { background: var(--tb-bg-1); border: 1px solid var(--tb-border); }
   .chat-msg.tool { background: transparent; border: 1px dashed var(--tb-border); color: var(--tb-text-dim); font-size: 11px; padding: 3px 8px; align-self: flex-start; }
   .chat-who { font-size: 10.5px; color: var(--tb-text-dim); margin-bottom: 3px; font-weight: 600; }
@@ -349,8 +349,8 @@
   .reader-head h1 { font-size: 17px; margin-bottom: 10px; }
   .actions { gap: 6px; row-gap: 8px; align-items: center; }
   .actions .btn { border-radius: 999px; padding: 5px 12px; font-size: 12.5px; }
-  .actions .btn.ai-act { border-color: color-mix(in srgb, var(--tb-accent) 38%, transparent); background: color-mix(in srgb, var(--tb-accent) 13%, transparent); }
-  .actions .btn.ai-act:hover { background: color-mix(in srgb, var(--tb-accent) 22%, transparent); }
+  .actions .btn.ai-act { border-color: color-mix(in srgb, var(--tb-accent) 38%, var(--tb-bg)); background: color-mix(in srgb, var(--tb-accent) 13%, var(--tb-bg)); }
+  .actions .btn.ai-act:hover { background: color-mix(in srgb, var(--tb-accent) 22%, var(--tb-bg)); }
   .sep-v { width: 1px; align-self: stretch; min-height: 18px; background: var(--tb-border); margin: 0 4px; }
   .ai { box-shadow: 0 -8px 22px rgba(0,0,0,.10); }
   .ai-head { padding: 10px 16px 8px; }
@@ -424,7 +424,7 @@
   .btn:hover { background: var(--tb-hover); color: var(--tb-text); border-color: var(--tb-border-strong); }
   .btn:active { background: var(--tb-active); }
   .btn.primary {
-    background: color-mix(in srgb, var(--tb-accent) 92%, transparent);
+    background: color-mix(in srgb, var(--tb-accent) 92%, var(--tb-bg));
     border-color: transparent;
     color: var(--tb-accent-fg);
     font-weight: 600;
@@ -432,18 +432,18 @@
   .btn.primary:hover { background: var(--tb-accent); color: var(--tb-accent-fg); }
   /* A toggled button, not the page's primary action: tint, never fill. */
   .btn.on {
-    background: color-mix(in srgb, var(--tb-accent) 16%, transparent);
+    background: color-mix(in srgb, var(--tb-accent) 16%, var(--tb-bg));
     border-color: color-mix(in srgb, var(--tb-accent) 40%, transparent);
     color: var(--tb-accent);
     font-weight: 600;
   }
-  .btn.on:hover { background: color-mix(in srgb, var(--tb-accent) 24%, transparent); color: var(--tb-accent); }
+  .btn.on:hover { background: color-mix(in srgb, var(--tb-accent) 24%, var(--tb-bg)); color: var(--tb-accent); }
 
   .folders { background: var(--tb-bg-1); border-right: 1px solid var(--tb-border); padding: 6px 8px 20px; }
   .folder { border-radius: 999px; padding: 5px 10px; transition: background .12s, color .12s; }
   .folder:hover { background: var(--tb-bg-2); color: var(--tb-text); }
   .folder.active {
-    background: color-mix(in srgb, var(--tb-accent) 15%, transparent);
+    background: color-mix(in srgb, var(--tb-accent) 15%, var(--tb-bg));
     color: var(--tb-text);
     box-shadow: none;
   }
@@ -452,7 +452,7 @@
   .list { background: var(--tb-bg); }
   .item { padding: 10px 13px; border-bottom: 1px solid color-mix(in srgb, var(--tb-border) 70%, transparent); transition: background .12s; }
   .item:hover { background: var(--tb-bg-1); box-shadow: none; }
-  .item.active { background: color-mix(in srgb, var(--tb-accent) 10%, transparent); box-shadow: inset 3px 0 0 var(--tb-accent); }
+  .item.active { background: color-mix(in srgb, var(--tb-accent) 10%, var(--tb-bg)); box-shadow: inset 3px 0 0 var(--tb-accent); }
   .item.unread { box-shadow: inset 3px 0 0 var(--tb-accent); }
   .item.unread.active { box-shadow: inset 3px 0 0 var(--tb-accent); }
   .item .from { font-size: 12px; }
@@ -685,7 +685,7 @@
     -webkit-backdrop-filter: var(--tb-glass-blur);
     border-color: var(--tb-glass-line);
   }
-  .chat-msg.user { background: color-mix(in srgb, var(--tb-accent) 15%, transparent); }
+  .chat-msg.user { background: color-mix(in srgb, var(--tb-accent) 15%, var(--tb-bg)); }
   .input, .textarea {
     background: color-mix(in srgb, var(--tb-bg) 82%, transparent);
     border-color: var(--tb-glass-line);
@@ -719,7 +719,7 @@
     flex: none;
   }
   .actions .btn.ai-act:hover {
-    background: color-mix(in srgb, var(--tb-accent) 14%, transparent);
+    background: color-mix(in srgb, var(--tb-accent) 14%, var(--tb-bg));
     color: var(--tb-text);
     border-color: color-mix(in srgb, var(--tb-accent) 42%, transparent);
   }
@@ -931,7 +931,7 @@
   .kb-list { max-height: 46vh; overflow: auto; border: 1px solid var(--tb-glass-line); border-radius: var(--tb-r-md); padding: 6px; }
   .kb-row { display: flex; align-items: center; gap: 7px; padding: 3px 6px; border-radius: 7px; cursor: pointer; font-size: 12.5px; }
   .kb-row:hover { background: var(--tb-hover); }
-  .kb-row.on { background: color-mix(in srgb, var(--tb-accent) 12%, transparent); }
+  .kb-row.on { background: color-mix(in srgb, var(--tb-accent) 12%, var(--tb-bg)); }
   .kb-row .kb-acct { color: var(--tb-text-dim); font-size: 10.5px; margin-left: auto; flex: none; }
   .kb-progress { margin-top: 10px; padding: 10px 12px; border-radius: var(--tb-r-md); border: 1px solid var(--tb-glass-line); background: var(--tb-glass-1); font-size: 12.5px; }
   .kb-progress .kb-bar { height: 4px; border-radius: 999px; background: var(--tb-border); overflow: hidden; margin: 7px 0; }
@@ -944,7 +944,7 @@
   .card-list { width: 300px; flex: none; overflow: auto; border-right: 1px solid var(--tb-glass-line); padding: 8px; }
   .card-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: var(--tb-r-md); cursor: pointer; }
   .card-row:hover { background: var(--tb-hover); }
-  .card-row.on { background: color-mix(in srgb, var(--tb-accent) 14%, transparent); }
+  .card-row.on { background: color-mix(in srgb, var(--tb-accent) 14%, var(--tb-bg)); }
   .card-row .cr-main { min-width: 0; }
   .card-row .cr-name { font-size: 13px; color: var(--tb-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .card-row .cr-name.noname { color: var(--tb-text-dim); font-style: italic; }
@@ -1182,7 +1182,7 @@
   .sigrow > .siglbl { width: 40px; flex: none; font-size: 11.5px; color: var(--tb-text-dim); }
   .sigchip { border: 1px solid var(--tb-border); background: transparent; color: var(--tb-text-dim); border-radius: 999px; padding: 3px 11px; font: inherit; font-size: 12px; cursor: pointer; }
   .sigchip:hover { background: var(--tb-hover); color: var(--tb-text); }
-  .sigchip.on { border-color: color-mix(in srgb, var(--tb-accent) 45%, transparent); color: var(--tb-accent); background: color-mix(in srgb, var(--tb-accent) 14%, transparent); }
+  .sigchip.on { border-color: color-mix(in srgb, var(--tb-accent) 45%, var(--tb-bg)); color: var(--tb-accent); background: color-mix(in srgb, var(--tb-accent) 14%, var(--tb-bg)); }
   .sigchip.tb::after { content: 'TB'; margin-left: 6px; font-size: 9.5px; opacity: .7; letter-spacing: .5px; }
   /* Rich-text signature editor: a real contenteditable, so bold, colours, tables
      and images survive exactly as they will be sent. */
@@ -1914,6 +1914,9 @@ function renderPinned (host) {
     var row = document.createElement('div')
     row.className = 'folder pinned' + (folder.id === state.folderId ? ' active' : '')
     row.title = (folder.path || folder.name) + '（置顶副本）'
+    // The pinned copy needs the same identity as the tree row it duplicates,
+    // otherwise right-clicking a pinned folder finds nothing to open a menu for.
+    row.dataset.folderId = folder.id
     // Same gutter as the tree rows, so the star never lands on the folder icon.
     row.style.paddingLeft = '24px'
     var icon = document.createElement('span')
@@ -1968,7 +1971,7 @@ state.pinned = loadPinned()
     + '.folder .pin.on{opacity:1;color:var(--tb-accent)}'
     // A pinned row is TINTED where the tree rows are not, so the base zero margin
     // let two pinned rows merge into one blob with no seam.
-    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, transparent);margin-bottom:4px}'
+    + '.folder.pinned{background:color-mix(in srgb, var(--tb-accent) 8%, var(--tb-bg));margin-bottom:4px}'
     + '.folder.pinned:last-child{margin-bottom:0}'
   document.head.appendChild(style)
 })()
@@ -2018,6 +2021,9 @@ function renderFolders () {
       row.style.setProperty('--guide', (10 + (folder.depth - 1) * 16 + 7) + 'px')
     }
     row.title = folder.path || folder.name
+  // The context menu reaches a row through this, the same way a message row is
+  // reached through data-msg-id.
+  row.dataset.folderId = folder.id
     // Floats over the row (see folderPin); it is absolutely positioned, so the
     // row's flex layout is exactly what it was before pinning existed.
     row.appendChild(folderPin(folder, false))
@@ -2130,6 +2136,11 @@ function renderList () {
       // one the user would see first, and it is what the count already reports.
       var newest = group.messages.length ? group.messages[0] : null
       head.className = 'thread-head' + (newest && !newest.read ? ' unread' : '')
+  // A grouped row had no message id, so the context menu found nothing to act on
+  // and the aggregate view silently had no menu at all. The newest message is the
+  // one the header already speaks for, so it becomes the group's representative.
+  if (newest) head.dataset.msgId = newest.id
+  if (group.key !== undefined) head.dataset.threadKey = group.key
       var caret = document.createElement('span')
       caret.className = 'folder-caret'
       caret.textContent = state.expanded[group.key] ? '▾' : '▸'
@@ -4623,15 +4634,61 @@ function showContextMenu (event, kind, messageId, target) {
     var message = ctxMessage()
     items = [['__head', message ? String(message.subject || '这封邮件') : '这封邮件']]
       .concat(ctxTextItems(), ctxSelectionItems(), ctxImageItems(), ['__sep'], ctxMailItems())
+  } else if (kind === 'folder') {
+    var folderRow = target && target.closest ? target.closest('.folder') : null
+    items = ctxFolderItems(folderRow && folderRow.dataset ? folderRow.dataset.folderId : '')
   } else {
-    items = ctxMailItems()
+    // A grouped row is a row too: it gets the group commands on top of the same
+    // mail commands, acting on the representative message it already carries.
+    var threadRow = target && target.closest ? target.closest('.thread-head') : null
+    items = (threadRow ? ctxThreadItems(threadRow.dataset.threadKey) : []).concat(ctxMailItems())
   }
   ctxBuild(items)
   ctxPlace($('ctxmenu'), event.clientX, event.clientY)
 }
 
-function ctxMessageIdFrom (node) {
-  while (node && node.nodeType === 1) {
+// A folder row's own menu. Everything in it calls an existing capability rather
+// than adding one: opening, the same pin toggle the star uses, and copying the
+// name/path. `state.pinned` is written exactly the way folderPin writes it, so the
+// tree and the menu can never disagree about what is pinned.
+function ctxFolderItems (folderId) {
+  var folder = null
+  var list = state.folders || []
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].id === folderId) { folder = list[i]; break }
+  }
+  if (!folder) return []
+  var pinned = !!(state.pinned && state.pinned[folder.id])
+  return [
+    ['__head', folderLabel(folder)],
+    ['打开', '', function () { selectFolder(folder.id) }],
+    ['__sep'],
+    [pinned ? '取消置顶' : '置顶到顶部', '', function () {
+      state.pinned = state.pinned || {}
+      state.pinned[folder.id] = !state.pinned[folder.id]
+      savePinned()
+      renderFolders()
+    }],
+    ['复制文件夹名称', '', function () { ctxCopyText(folderLabel(folder), '文件夹名称') }],
+    ['复制文件夹路径', '', function () { ctxCopyText(folder.path || folder.name, '文件夹路径') }],
+  ]
+}
+
+// The two commands that only mean anything for a collapsed group; the mail
+// commands are appended after these by showContextMenu.
+function ctxThreadItems (key) {
+  if (key === undefined || key === null || key === '') return []
+  var expanded = !!(state.expanded && state.expanded[key])
+  return [
+    [expanded ? '折叠这个主题' : '展开这个主题', '', function () {
+      state.expanded[key] = !expanded
+      renderList()
+    }],
+    ['__sep'],
+  ]
+}
+
+function ctxMessageIdFrom (node) {  while (node && node.nodeType === 1) {
     if (node.dataset && node.dataset.msgId) return node.dataset.msgId
     node = node.parentNode
   }
@@ -4643,7 +4700,7 @@ document.addEventListener('contextmenu', function (event) {
   if (!target || !target.closest) return
   // The panel's own chrome keeps the browser menu: it is where "inspect" and
   // "copy" on a chip still belong.
-  if (!target.closest('.compose, #reader, #list, #signatures')) return
+  if (!target.closest('.compose, #reader, #list, #signatures, #folders')) return
   var editable = null
   var node = target
   while (node && node.nodeType === 1) {
@@ -4667,6 +4724,12 @@ document.addEventListener('contextmenu', function (event) {
   if (id) {
     event.preventDefault()
     showContextMenu(event, 'list', id, target)
+    return
+  }
+  var folderRow = target.closest('.folder')
+  if (folderRow && folderRow.dataset && folderRow.dataset.folderId) {
+    event.preventDefault()
+    showContextMenu(event, 'folder', null, target)
     return
   }
   // Anything else inside the composer (a header field, the toolbar): the browser
@@ -4729,29 +4792,6 @@ function pollEvents () {
       }
     }
   }).catch(function () {})
-}
-
-// A nearly-white "brand" colour is not a brand hue. DSH's dark theme reports one
-// for --dsw-alias-brand-primary, and mirroring it breaks every place the panel
-// tints with --tb-accent or writes text in it.
-function isPaleColor (value) {
-  var v = String(value || '').trim()
-  var hex = /^#([0-9a-f]{6})$/i.exec(v)
-  if (hex) {
-    var n = parseInt(hex[1], 16)
-    return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) > 200
-  }
-  var rgb = /^rgba?\(([^)]+)\)/.exec(v)
-  if (rgb) {
-    var parts = rgb[1].split(',')
-    return (0.2126 * parseFloat(parts[0]) + 0.7152 * parseFloat(parts[1]) + 0.0722 * parseFloat(parts[2])) > 200
-  }
-  // getComputedStyle can hand back the modern form: color(srgb 0.97 0.98 0.98)
-  var srgb = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(v)
-  if (srgb) {
-    return (0.2126 * parseFloat(srgb[1]) + 0.7152 * parseFloat(srgb[2]) + 0.0722 * parseFloat(srgb[3])) * 255 > 200
-  }
-  return false
 }
 
 function isDarkColor (value) {
@@ -4845,15 +4885,6 @@ function mirrorTheme () {
     for (var i = 0; i < names.length; i++) {
       var value = readToken(win, hosts, names[i])
       if (!value) continue
-      // A brand token that is nearly WHITE is not a brand hue, and
-      // --dsw-alias-brand-primary is exactly that in DSH's dark theme: it is really
-      // the foreground that sits ON a brand surface, not the brand colour. The
-      // panel uses --tb-accent as a TINT and as TEXT in about fifteen places —
-      // unread rows, the selected folder, AI buttons, the user's chat bubble — so
-      // mirroring that white turned all of them into pale washes. The visible
-      // symptom was an unread subject rendering white-on-white and unreadable.
-      // A pale accent is not an accent: keep this panel's own hue instead.
-      if (names[i] === '--dsw-alias-brand-primary' && isPaleColor(value)) continue
       document.documentElement.style.setProperty(names[i], value)
       var targets = map[names[i]]
       for (var t = 0; t < targets.length; t++) {
