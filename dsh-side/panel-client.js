@@ -964,6 +964,23 @@ window.__ModuleLoader__.load({
           return
         }
 
+        // The panel's settings page needs an absolute directory, and DSH already
+        // owns a native folder chooser. Relaying it means the user never has to
+        // type a Windows path into a text box.
+        if (msg.type === 'ui/pick-directory') {
+          var uiws = serviceOf(activeCtx, 'uiWorkspace')
+          if (uiws === undefined || typeof uiws.pickDirectory !== 'function') {
+            replyTo(event.source, msg.id, { ok: false, error: 'uiWorkspace.pickDirectory 不可用' })
+            return
+          }
+          Promise.resolve(uiws.pickDirectory()).then(function (path) {
+            replyTo(event.source, msg.id, { ok: true, result: { path: path || '' } })
+          }).catch(function (error) {
+            replyTo(event.source, msg.id, { ok: false, error: String((error && error.message) || error) })
+          })
+          return
+        }
+
         if (msg.type === 'panel/open-ai' || msg.type === 'panel/open-tab') {
           var facts = []
           var sidebar = serviceOf(activeCtx, 'betterSidebar')

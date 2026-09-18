@@ -873,6 +873,21 @@
   .kb-done { color: var(--tb-ok); }
   .kb-fail { color: var(--tb-err); }
 
+  /* ---------- 设置 ---------- */
+  .set-sec { margin: 16px 0 8px; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+             text-transform: uppercase; color: var(--tb-text-dim);
+             border-bottom: 1px solid var(--tb-glass-line); padding-bottom: 5px; }
+  .set-sec:first-child { margin-top: 4px; }
+  .set-row { display: flex; align-items: center; gap: 9px; margin: 7px 0; }
+  .set-row > label { flex: none; width: 112px; font-size: 12.5px; color: var(--tb-text-dim); }
+  .set-row .input { flex: 1; min-width: 0; }
+  .set-row .input[type=number] { flex: none; width: 92px; }
+  .set-unit { flex: none; font-size: 12px; color: var(--tb-text-dim); }
+  .set-hint { margin: 5px 0 0 121px; font-size: 11.5px; line-height: 1.55; color: var(--tb-text-dim); }
+  .set-check { display: flex; align-items: center; gap: 8px; margin: 9px 0; font-size: 12.5px; cursor: pointer; }
+  .set-progress { margin-top: 14px; padding: 9px 12px; border-radius: var(--tb-r-md);
+                  border: 1px solid var(--tb-glass-line); background: var(--tb-glass-1); font-size: 12.5px; }
+
   /* When the block really did move to the right sidebar, what is left behind in
      the panel must stop being a floating window. It used to keep its fixed
      centring and its shadow and become a hollow box hanging over the mail, with
@@ -1109,6 +1124,7 @@
     <button class="btn" id="btn-sessions" data-overflow="1">会话</button>
     <button class="btn" id="btn-signatures" data-overflow="1">签名</button>
     <button class="btn" id="btn-kb" data-overflow="1" title="把选中的邮件文件夹导出成 Markdown，交给灵枢建成知识库">记忆库</button>
+    <button class="btn" id="btn-set" data-overflow="1" title="插件设置">设置</button>
     <button class="btn" id="btn-group" data-overflow="1" title="按主题聚合">聚合</button>
     <button class="btn" id="btn-more" hidden title="更多">⋯</button>
     <button class="btn primary" id="btn-compose">写邮件</button>
@@ -1280,6 +1296,61 @@
       </div>
       <div class="kb-list" id="kb-list"></div>
       <div class="kb-progress" id="kb-progress" hidden></div>
+    </div>
+  </div>
+
+  <div class="ai" id="setwin" hidden>
+    <div class="ai-head">
+      <span class="ai-title">设置</span>
+      <span class="ai-model" id="set-path"></span>
+      <span class="grow"></span>
+      <button class="btn" id="set-save">保存</button>
+      <button class="btn" id="set-reset">恢复默认</button>
+      <button class="btn" id="set-close">关闭</button>
+    </div>
+    <div class="ai-body">
+      <p class="meta">这些是**你自己**的偏好，存在宿主侧 <span class="code">settings.json</span>，和插件的 Cordis 配置（部署时定的接线）不是一回事。默认值就是之前的硬编码值，所以不改就完全一样。</p>
+
+      <div class="set-sec">记忆库</div>
+      <div class="set-row">
+        <label for="set-kbroot">导出根目录</label>
+        <input class="input" id="set-kbroot" type="text" spellcheck="false">
+        <button class="btn" id="set-pick" title="用 DSH 原生目录选择器挑一个">选择…</button>
+      </div>
+      <p class="set-hint">灵枢的 <span class="code">index_doc</span> 会把**绝对路径**记进 <span class="code">doc_ref.root</span>，所以这个目录**要稳定** —— 改了它，之前索引的节点就指不回源文件了。</p>
+
+      <div class="set-row">
+        <label for="set-kblimit">每次最多取</label>
+        <input class="input" id="set-kblimit" type="number" min="1" max="500">
+        <span class="set-unit">封 / 文件夹</span>
+      </div>
+      <div class="set-row">
+        <label for="set-budget">蒸馏预算上限</label>
+        <input class="input" id="set-budget" type="number" min="1" max="500">
+        <span class="set-unit">封</span>
+      </div>
+      <p class="set-hint">蒸馏要**每封一次模型调用**。底下没有任何成本控制，这个数字就是唯一的闸门，超了就停。</p>
+
+      <div class="set-row">
+        <label for="set-sens">密级</label>
+        <select class="input" id="set-sens">
+          <option value="public">public</option>
+          <option value="internal">internal</option>
+          <option value="private">private</option>
+        </select>
+        <span class="set-unit">灵枢按这个写节点</span>
+      </div>
+      <p class="set-hint"><span class="code">private</span> / <span class="code">secret</span> 层在磁盘上是**加密**的（灵枢的 encryption 是 unlocked 状态）。</p>
+
+      <div class="set-sec">自动化</div>
+      <label class="set-check"><input type="checkbox" id="set-autoindex"> 导出完成后自动开一个会话去索引</label>
+      <div class="set-row">
+        <label for="set-poll">进度轮询间隔</label>
+        <input class="input" id="set-poll" type="number" min="300" max="10000">
+        <span class="set-unit">ms</span>
+      </div>
+
+      <div class="set-progress" id="set-note" hidden></div>
     </div>
   </div>
 
@@ -5696,6 +5767,160 @@ function reportTabOpen (info, label) {
   setNotice(label + '已开在右侧栏')
 }
 
+// -------------------------------------------------------------------- 设置
+// Per-user preferences, hosted in settings.json on the host side so they survive a
+// page refresh AND a DSH restart — localStorage would have survived the refresh but
+// silently lost everything on restart, and the export root is the kind of value you
+// do not want to retype.
+//
+// These are NOT the Cordis plugin config. That is deployment wiring, read-only and
+// chosen at install time; this is what the user can change while using the panel.
+var SETTINGS_FIELDS = {
+  kbRoot: 'set-kbroot',
+  kbLimit: 'set-kblimit',
+  distillBudget: 'set-budget',
+  sensitivity: 'set-sens',
+  autoIndex: 'set-autoindex',
+  pollMs: 'set-poll',
+}
+
+var settingsState = { loaded: false, defaults: {}, path: '' }
+
+function fillSettingsForm (settings) {
+  for (var key in SETTINGS_FIELDS) {
+    var el = $(SETTINGS_FIELDS[key])
+    if (!el) continue
+    if (el.type === 'checkbox') el.checked = settings[key] === true
+    else el.value = settings[key] === undefined || settings[key] === null ? '' : String(settings[key])
+  }
+}
+
+function readSettingsForm () {
+  var out = {}
+  for (var key in SETTINGS_FIELDS) {
+    var el = $(SETTINGS_FIELDS[key])
+    if (!el) continue
+    if (el.type === 'checkbox') { out[key] = el.checked; continue }
+    if (el.type === 'number') {
+      // `Number('')` is 0 and `Number.isFinite(0)` is true, so a blank box would
+      // have been clamped to the minimum (1 mail) and saved — turning "I cleared
+      // this field" into "set it to 1". A blank numeric field is not a value.
+      var text = String(el.value).trim()
+      if (text === '') continue
+      var n = Number(text)
+      if (!Number.isFinite(n)) continue
+      out[key] = n
+      continue
+    }
+    // Same reasoning for text: an empty box must not overwrite a good value with ''.
+    var t = String(el.value).trim()
+    if (t === '') continue
+    out[key] = t
+  }
+  return out
+}
+
+function settingsNote (text, cls) {
+  var box = $('set-note')
+  if (!box) return
+  box.hidden = false
+  box.className = 'set-progress' + (cls ? ' ' + cls : '')
+  box.textContent = text
+}
+
+function loadSettings (force) {
+  if (settingsState.loaded && !force) return Promise.resolve(settingsState.current)
+  return fetch('/api/thunderbird/settings', { cache: 'no-store' })
+    .then(function (r) { return r.json() })
+    .then(function (out) {
+      if (!out || out.ok !== true) throw new Error((out && out.error) || '读取设置失败')
+      settingsState.loaded = true
+      settingsState.current = out.settings
+      settingsState.defaults = out.defaults || {}
+      settingsState.path = out.path || ''
+      $('set-path').textContent = out.path || ''
+      fillSettingsForm(out.settings)
+      return out.settings
+    })
+}
+
+function saveSettingsForm (patch) {
+  return fetch('/api/thunderbird/settings/set', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch || readSettingsForm()),
+  }).then(function (r) { return r.json() }).then(function (out) {
+    if (!out || out.ok !== true) throw new Error((out && out.error) || '保存失败')
+    settingsState.current = out.settings
+    fillSettingsForm(out.settings)
+    return out.settings
+  })
+}
+
+// `ui/pick-directory` is the client half calling ctx.uiWorkspace.pickDirectory() —
+// DSH's own folder chooser. Typing an absolute Windows path by hand is not a
+// reasonable thing to ask of anyone, and this picker already exists.
+function pickDirectory () {
+  return dshCall('ui/pick-directory', {}, 180000).then(function (out) {
+    var path = out && (out.path || out.dir || (out.result && out.result.path))
+    if (!path) throw new Error('目录选择器没有返回路径')
+    $('set-kbroot').value = path
+    return path
+  })
+}
+
+// Saving is disabled until the host has actually answered. The settings route is a
+// HOST change, so on a running DSH that has not been restarted the GET 404s — and a
+// form full of blanks with an enabled 保存 button is an invitation to write junk.
+// Rather than duplicating the host's defaults in here (two copies drift), the form
+// stays empty and says why.
+function setFormEnabled (on) {
+  $('set-save').disabled = !on
+  $('set-reset').disabled = !on
+  $('set-pick').disabled = !on
+}
+
+function openSettings () {
+  $('setwin').hidden = false
+  $('rules').hidden = true
+  $('sessions').hidden = true
+  $('signatures').hidden = true
+  $('kbwin').hidden = true
+  $('set-note').hidden = true
+  setFormEnabled(false)
+  loadSettings(true).then(function () {
+    setFormEnabled(true)
+    settingsNote('已从宿主读取设置 ✓', 'kb-done')
+  }).catch(function (error) {
+    settingsNote('读不到设置：' + String((error && error.message) || error)
+      + ' —— 设置接口是宿主改动，重启 DSH 之后才存在。在那之前这里保持只读，'
+      + '免得把空值写进去。', 'kb-fail')
+  })
+}
+
+function renderSettings () { /* the form is filled by loadSettings */ }
+
+;(function () {
+  if (!$('btn-set')) return
+  $('btn-set').onclick = function () { if ($('setwin').hidden) openSettings(); else $('setwin').hidden = true }
+  $('set-close').onclick = function () { $('setwin').hidden = true }
+  $('set-pick').onclick = function () {
+    settingsNote('等你在系统对话框里选一个目录…')
+    pickDirectory().then(function (path) { settingsNote('已选：' + path) })
+      .catch(function (error) { settingsNote('选择失败：' + String((error && error.message) || error), 'kb-fail') })
+  }
+  $('set-save').onclick = function () {
+    saveSettingsForm().then(function () { settingsNote('已保存 ✓', 'kb-done') })
+      .catch(function (error) { settingsNote('保存失败：' + String((error && error.message) || error), 'kb-fail') })
+  }
+  $('set-reset').onclick = function () {
+    saveSettingsForm({ reset: true }).then(function (settings) {
+      fillSettingsForm(settings)
+      settingsNote('已恢复默认 ✓', 'kb-done')
+    }).catch(function (error) { settingsNote('恢复失败：' + String((error && error.message) || error), 'kb-fail') })
+  }
+})()
+
 // ------------------------------------------------------------------ 记忆库 (P1)
 // Export selected folders as one Markdown file per mail, then hand the directory
 // to 灵枢's own index_doc. The plugin never writes into the memory store itself:
@@ -5704,6 +5929,26 @@ function reportTabOpen (info, label) {
 // its root, makes one node per level-1 heading at the sensitivity it is given, and
 // does not collide on the content-prefix signature that `write` dedupes with.
 var kbState = { job: null, root: '', picked: {}, timer: null }
+
+// Read straight from the last loaded settings, with the host's own defaults as the
+// fallback so a prompt is never built from `undefined` when the settings request
+// has not come back yet.
+function kbSensitivity () {
+  var s = settingsState.current && settingsState.current.sensitivity
+  return s || (settingsState.defaults && settingsState.defaults.sensitivity) || 'private'
+}
+
+function kbBudget () {
+  var n = settingsState.current && settingsState.current.distillBudget
+  if (!n) n = settingsState.defaults && settingsState.defaults.distillBudget
+  return Number(n) || 20
+}
+
+function kbPollMs () {
+  var n = settingsState.current && settingsState.current.pollMs
+  if (!n) n = settingsState.defaults && settingsState.defaults.pollMs
+  return Number(n) || 1200
+}
 
 function kbPickedFolders () {
   var out = []
@@ -5783,6 +6028,13 @@ function kbPoll () {
         $('kb-index').hidden = false
         $('kb-distill').hidden = false
         $('kb-ingest').hidden = false
+        // Opt-in, and off by default: this opens a session and sends it a prompt,
+        // which spends a model call without anyone clicking anything.
+        if (out.state === 'done' && settingsState.current && settingsState.current.autoIndex === true) {
+          kbProgress('导出完成，按设置自动索引…', 1, 'kb-done')
+          kbState.root = out.root || kbState.root
+          $('kb-index').click()
+        }
         return
       }
       kbProgress('导出中 · ' + (out.folder || '') + ' · ' + (out.current || '') + ' · 已写 ' + out.files + ' 封',
@@ -5796,7 +6048,17 @@ function openKb () {
   $('rules').hidden = true
   $('sessions').hidden = true
   $('signatures').hidden = true
+  $('setwin').hidden = true
   renderKb()
+  // The limit comes from the settings page rather than a literal in the markup, so
+  // "what the config says" and "what the box shows" cannot drift apart.
+  loadSettings().then(function (s) {
+    if (!$('kb-limit').value || $('kb-limit').dataset.fromSettings === '1') {
+      $('kb-limit').value = String(s.kbLimit)
+      $('kb-limit').dataset.fromSettings = '1'
+    }
+    $('kb-root').textContent = s.kbRoot
+  }).catch(function () { /* the export falls back to the host default */ })
   fetch('/api/thunderbird/kb/status', { cache: 'no-store' }).then(function (r) { return r.json() }).then(function (out) {
     if (out && out.root) {
       kbState.root = out.root
@@ -5851,7 +6113,7 @@ function kbSession (title, prompt, okMessage) {
       $('kb-index').hidden = true
       kbProgress('导出中（每个文件夹最多 ' + out.limit + ' 封）…', 0, null)
       if (kbState.timer) clearInterval(kbState.timer)
-      kbState.timer = setInterval(kbPoll, 1200)
+      kbState.timer = setInterval(kbPoll, kbPollMs())
       kbPoll()
     }).catch(function (error) { kbProgress('启动失败：' + String((error && error.message) || error), null, 'kb-fail') })
   }
@@ -5861,7 +6123,7 @@ function kbSession (title, prompt, okMessage) {
     // ask a DSH session to run it. The prompt states the exact call.
     var prompt = '请把邮件记忆库目录索引进灵枢，让每封邮件变成一条可检索的知识节点。\n\n'
       + '目录：`' + kbState.root + '`\n\n'
-      + '执行：`lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="private")`\n\n'
+      + '执行：`lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="' + kbSensitivity() + '")`\n\n'
       + '完成后报告：索引了多少个文件、knowledge 层现在有多少节点。不要修改目录里的任何文件。'
     kbSession('邮件记忆库', prompt, '已开一个 DSH 会话去索引记忆库')
   }
@@ -5882,7 +6144,7 @@ function kbSession (title, prompt, okMessage) {
       '',
       '严格按下面的做法，不要自由发挥：',
       '',
-      '1. 先 `lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="private")` 确保每封邮件都有节点。',
+      '1. 先 `lingshu_cg(op="index_doc", path="' + kbState.root + '", sensitivity="' + kbSensitivity() + '")` 确保每封邮件都有节点。',
       '2. 每封邮件写一篇蒸馏笔记到 `' + kbState.root + '/notes/<主题>.md`，只保留：',
       '   - 实体（人、公司、单号、金额、日期）',
       '   - 结论与承诺',
@@ -5891,12 +6153,12 @@ function kbSession (title, prompt, okMessage) {
       '3. 每条**值得长期记住**的事实调用 `mdcg_propose`（**不要用 write**，我要在审核队列里逐条过）。',
       '   每条必须带 `derived_from` = 来源邮件节点的 id。用 `lingshu_cg(op="read", query="<主题>")`',
       '   找到对应节点，它的 `ref.path` 就是那封邮件的 md 文件。',
-      '4. **预算上限：最多处理 20 封邮件**。到上限就停下，报告还剩多少封没处理。',
+      '4. **预算上限：最多处理 ' + kbBudget() + ' 封邮件**。到上限就停下，报告还剩多少封没处理。',
       '5. 不要修改 `' + kbState.root + '` 里已导出的邮件文件。',
       '',
       '最后报告：处理了几封、propose 了几条、knowledge 层节点数、_link.jsonl 是否已生成。',
     ].join('\n')
-    kbSession('邮件记忆蒸馏', prompt, '已开会话做蒸馏（上限 20 封）')
+    kbSession('邮件记忆蒸馏', prompt, '已开会话做蒸馏（上限 ' + kbBudget() + ' 封）')
   }
   $('kb-ingest').onclick = function () {
     if (!kbState.root) { setError('还没有导出目录'); return }

@@ -297,6 +297,61 @@ check('the mail doc carries 邮件信息 + 正文 sections',
 check('the file name is unique per message', files.some((f) => /-\d+\.md$/.test(f)),
   files[0] || '-')
 
+// ---- 设置 (settings.json) ---------------------------------------------------
+// Defaults must be exactly the old hardcoded literals, otherwise "I did not change
+// anything" would not mean "nothing changed".
+const defaults = await get('/api/thunderbird/settings')
+check('settings defaults match the previous hardcoded values',
+  defaults.settings.kbLimit === 50 && defaults.settings.distillBudget === 20 &&
+  defaults.settings.sensitivity === 'private' && defaults.settings.autoIndex === false &&
+  defaults.settings.pollMs === 1200,
+  JSON.stringify(defaults.settings))
+check('settings reports where it is stored',
+  typeof defaults.path === 'string' && defaults.path.endsWith('settings.json'), defaults.path)
+
+const customRoot = join(home, 'custom-kb')
+const savedSettings = await post('/api/thunderbird/settings/set', { kbRoot: customRoot, kbLimit: 3, distillBudget: 9 })
+check('settings save round-trips', savedSettings.ok === true && savedSettings.settings.kbLimit === 3 &&
+  savedSettings.settings.distillBudget === 9 && savedSettings.settings.kbRoot === customRoot,
+  JSON.stringify(savedSettings.settings))
+
+// A partial patch must MERGE. The panel saves one section at a time, so a replace
+// would silently wipe every field that section did not carry.
+const partial = await post('/api/thunderbird/settings/set', { sensitivity: 'internal' })
+check('a partial patch does not reset the other fields',
+  partial.settings.sensitivity === 'internal' && partial.settings.kbLimit === 3 &&
+  partial.settings.kbRoot === customRoot, JSON.stringify(partial.settings))
+
+const bogus = await post('/api/thunderbird/settings/set', { kbLimit: 99999, sensitivity: 'nonsense', pollMs: 1 })
+check('out-of-range numbers are clamped',
+  bogus.settings.kbLimit === 500 && bogus.settings.pollMs === 300, JSON.stringify(bogus.settings))
+check('an unknown sensitivity keeps the previous value', bogus.settings.sensitivity === 'internal', bogus.settings.sensitivity)
+
+const onDisk = JSON.parse(await readKb(join(home, 'dsh-thunderbird', 'settings.json'), 'utf8'))
+check('settings are durable json on disk', onDisk.kbRoot === customRoot && onDisk.kbLimit === 500,
+  JSON.stringify(onDisk).slice(0, 120))
+
+// The saved root must actually be obeyed, otherwise the setting is decoration.
+await post('/api/thunderbird/settings/set', { kbRoot: customRoot, kbLimit: 2 })
+const custom = await post('/api/thunderbird/kb/export', { folders: [{ id: folderId, name: '收件箱', accountId: 'account1' }] })
+check('kb/export uses the configured root and limit',
+  custom.root === customRoot && custom.limit === 2 && custom.sensitivity === 'internal',
+  JSON.stringify({ root: custom.root, limit: custom.limit, sens: custom.sensitivity }))
+let customJob = null
+for (let i = 0; i < 60; i++) {
+  customJob = await get('/api/thunderbird/kb/status?job=' + encodeURIComponent(custom.job))
+  if (customJob && (customJob.state === 'done' || customJob.state === 'error')) break
+  await wait(200)
+}
+check('the configured root is where the files land',
+  customJob && customJob.state === 'done' && customJob.root === customRoot && customJob.files === 2,
+  JSON.stringify({ state: customJob && customJob.state, root: customJob && customJob.root, files: customJob && customJob.files }))
+
+const reset = await post('/api/thunderbird/settings/set', { reset: true })
+check('reset restores every default',
+  reset.settings.kbRoot === defaults.settings.kbRoot && reset.settings.kbLimit === 50 &&
+  reset.settings.sensitivity === 'private', JSON.stringify(reset.settings))
+
 mock.kill()
 server.close()
 await rm(home, { recursive: true, force: true })

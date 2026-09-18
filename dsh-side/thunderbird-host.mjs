@@ -1150,6 +1150,91 @@ export function apply(ctx, config) {
   const KB_JOBS = new Map()
   let kbJobSeq = 0
 
+  // ---------------------------------------------------------------- 设置 (可写)
+  //
+  // Everything here used to be a literal in this file or in ui.html, which meant
+  // changing any of it required editing code and restarting DSH. Defaults are
+  // exactly those old literals, so an untouched install behaves identically.
+  //
+  // `config` (the Cordis plugin config) is a SEPARATE thing and stays read-only:
+  // it is deployment wiring chosen by whoever installed the plugin, whereas these
+  // are per-user preferences the panel may change at runtime.
+  const SETTINGS_PATH = join(STORE_DIR, 'settings.json')
+  const DEFAULT_SETTINGS = {
+    kbRoot: KB_ROOT,
+    kbLimit: 50,          // mails per folder per export
+    distillBudget: 20,    // the P2 cap, and the only thing standing between this and
+                          // a runaway model bill — so it is configurable instead of a
+                          // magic number buried inside a prompt string
+    sensitivity: 'private',
+    autoIndex: false,     // after an export, open a session that indexes it
+    pollMs: 1200,
+  }
+  const SENSITIVITIES = ['public', 'internal', 'private']
+
+  let settingsCache = null
+
+  // `base` is what an INVALID or ABSENT patch field falls back to. The first
+  // version fell back to the built-in default for invalid values, so sending
+  // `sensitivity: "nonsense"` silently reset a working `internal` back to
+  // `private` — a bad value must keep what was already there, not discard it.
+  function normalizeSettings (patch, base) {
+    const out = Object.assign({}, DEFAULT_SETTINGS, base || null)
+    const input = patch && typeof patch === 'object' ? patch : {}
+    if (typeof input.kbRoot === 'string' && input.kbRoot.trim()) out.kbRoot = input.kbRoot.trim()
+    if (Number.isFinite(Number(input.kbLimit))) out.kbLimit = Math.max(1, Math.min(500, Math.round(Number(input.kbLimit))))
+    if (Number.isFinite(Number(input.distillBudget))) out.distillBudget = Math.max(1, Math.min(500, Math.round(Number(input.distillBudget))))
+    if (SENSITIVITIES.indexOf(String(input.sensitivity)) >= 0) out.sensitivity = String(input.sensitivity)
+    if (typeof input.autoIndex === 'boolean') out.autoIndex = input.autoIndex
+    if (Number.isFinite(Number(input.pollMs))) out.pollMs = Math.max(300, Math.min(10000, Math.round(Number(input.pollMs))))
+    return out
+  }
+
+  async function loadSettings () {
+    if (settingsCache) return settingsCache
+    try {
+      settingsCache = normalizeSettings(JSON.parse(await readFile(SETTINGS_PATH, 'utf8')), null)
+    } catch (error) {
+      settingsCache = normalizeSettings(null, null)
+    }
+    return settingsCache
+  }
+
+  async function saveSettings (patch) {
+    const current = await loadSettings()
+    // Merge, do not replace: the panel saves one section at a time, and replacing
+    // would silently reset every field that section did not carry.
+    //
+    // A null patch means RESET, and a reset must not merge — merging with the
+    // current values is what made `reset:true` a no-op that reported success.
+    const base = patch && typeof patch === 'object' ? current : null
+    settingsCache = normalizeSettings(patch, base)
+    await mkdir(STORE_DIR, { recursive: true })
+    await writeFile(SETTINGS_PATH, JSON.stringify(settingsCache, null, 2), 'utf8')
+    return settingsCache
+  }
+
+  const settingsGetHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    const current = await loadSettings()
+    sendJson(res, 200, { ok: true, settings: current, defaults: DEFAULT_SETTINGS, store: STORE_DIR, path: SETTINGS_PATH })
+  }
+
+  const settingsSetHandler = async (req, res) => {
+    if (preflight(req, res)) return
+    if (req.method !== 'POST') { sendJson(res, 405, { ok: false, error: 'POST only' }); return }
+    const input = await readJson(req)
+    if (!input || typeof input !== 'object') { sendJson(res, 400, { ok: false, error: 'expected a settings object' }); return }
+    try {
+      // `reset: true` restores the defaults, which is the way back if a bad kbRoot
+      // ever makes the features unusable.
+      const saved = input.reset === true ? await saveSettings(null) : await saveSettings(input)
+      sendJson(res, 200, { ok: true, settings: saved })
+    } catch (error) {
+      sendJson(res, 200, { ok: false, error: err(error) })
+    }
+  }
+
   const kbDate = (ms) => {
     const d = new Date(Number(ms) || Date.now())
     const p = (n) => (n < 10 ? '0' : '') + n
@@ -1178,10 +1263,10 @@ export function apply(ctx, config) {
     return lines.join('\n')
   }
 
-  async function kbRun (job, folders, limit) {
+  async function kbRun (job, folders, limit, root) {
     try {
-      await mkdir(KB_ROOT, { recursive: true })
-      const index = ['# 邮件记忆库', '', '导出目录：`' + KB_ROOT + '`', '']
+      await mkdir(root, { recursive: true })
+      const index = ['# 邮件记忆库', '', '导出目录：`' + root + '`', '']
       job.state = 'running'
       for (let f = 0; f < folders.length; f++) {
         if (job.cancel) break
@@ -1189,7 +1274,7 @@ export function apply(ctx, config) {
         job.folder = String((folder && (folder.name || folder.path)) || folder.id)
         const list = await bridge('messages.list', { folderId: folder.id, limit: limit }, 180000)
         const messages = (list && list.messages) || []
-        const dir = join(KB_ROOT, slugify(String(folder.accountId || 'acc')) + '__' + slugify(folder.name || folder.path, 32))
+        const dir = join(root, slugify(String(folder.accountId || 'acc')) + '__' + slugify(folder.name || folder.path, 32))
         await mkdir(dir, { recursive: true })
         let wrote = 0
         for (let i = 0; i < messages.length; i++) {
@@ -1217,9 +1302,9 @@ export function apply(ctx, config) {
         job.folders.push({ id: folder.id, name: folder.name || folder.path, messages: wrote, dir: dir })
       }
       index.push('## 下一步', '', '在 DSH 会话里对这个目录运行 `lingshu_cg(op="index_doc", path=…)`，', '即可把每封邮件变成一条 knowledge 节点，正文用 `op=ref` 回读。', '')
-      await writeFile(join(KB_ROOT, 'INDEX.md'), index.join('\n'), 'utf8')
-      await writeFile(join(KB_ROOT, 'state.json'), JSON.stringify({
-        root: KB_ROOT,
+      await writeFile(join(root, 'INDEX.md'), index.join('\n'), 'utf8')
+      await writeFile(join(root, 'state.json'), JSON.stringify({
+        root: root,
         exportedAt: Date.now(),
         folders: job.folders,
       }, null, 2), 'utf8')
@@ -1237,19 +1322,24 @@ export function apply(ctx, config) {
     const input = await readJson(req)
     const folders = Array.isArray(input && input.folders) ? input.folders : []
     if (!folders.length) { sendJson(res, 400, { ok: false, error: 'expected {folders: [{id, name, accountId}]}' }); return }
-    const limit = Math.max(1, Math.min(Number((input && input.limit)) || 50, 500))
+    const current = await loadSettings()
+    // The request may carry a per-run limit and root; the saved settings are the
+    // default, so "导出 selected folders" obeys the config without the panel
+    // having to echo it back.
+    const root = (typeof (input && input.root) === 'string' && input.root.trim()) ? input.root.trim() : current.kbRoot
+    const limit = Math.max(1, Math.min(Number(input && input.limit) || current.kbLimit, 500))
     const job = {
       id: 'kb' + (++kbJobSeq) + '-' + Date.now().toString(36),
       state: 'starting', startedAt: Date.now(), finishedAt: 0,
       folder: '', current: '', done: 0, files: 0, folders: [], errors: [], cancel: false,
       total: folders.length,
-      root: KB_ROOT,
+      root: root,
     }
     KB_JOBS.set(job.id, job)
     // Fire and forget: the panel polls kb/status. A folder can hold thousands of
     // mails and one body fetch is one round trip to the extension.
-    kbRun(job, folders, limit)
-    sendJson(res, 200, { ok: true, job: job.id, root: KB_ROOT, limit: limit })
+    kbRun(job, folders, limit, root)
+    sendJson(res, 200, { ok: true, job: job.id, root: root, limit: limit, sensitivity: current.sensitivity })
   }
 
   const kbStatusHandler = async (req, res) => {
@@ -1277,9 +1367,10 @@ export function apply(ctx, config) {
     }
     // No id: report the last export and the directory, so the panel can show
     // what is already there after a restart (jobs do not survive one).
+    const current = await loadSettings()
     let state = null
-    try { state = JSON.parse(await readFile(join(KB_ROOT, 'state.json'), 'utf8')) } catch (error) { state = null }
-    sendJson(res, 200, { ok: true, root: KB_ROOT, state: state, jobs: KB_JOBS.size })
+    try { state = JSON.parse(await readFile(join(current.kbRoot, 'state.json'), 'utf8')) } catch (error) { state = null }
+    sendJson(res, 200, { ok: true, root: current.kbRoot, state: state, jobs: KB_JOBS.size })
   }
 
   // ---- mount ---------------------------------------------------------------
@@ -1303,6 +1394,8 @@ export function apply(ctx, config) {
     ['/api/thunderbird/session/detach', sessionDetachHandler],
     ['/api/thunderbird/kb/export', kbExportHandler],
     ['/api/thunderbird/kb/status', kbStatusHandler],
+    ['/api/thunderbird/settings', settingsGetHandler],
+    ['/api/thunderbird/settings/set', settingsSetHandler],
     ['/api/thunderbird/session/file', sessionFileHandler],
     ['/api/thunderbird/session/transcript', transcriptHandler],
     ['/api/thunderbird/image', imageProxyHandler],
