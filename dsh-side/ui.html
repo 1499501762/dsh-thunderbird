@@ -535,11 +535,47 @@
     --tb-glass-2: color-mix(in srgb, var(--tb-bg-2) 72%, transparent);
     --tb-glass-line: color-mix(in srgb, var(--tb-text) 9%, transparent);
   }
-  .app {
+  /* ---- the manufactured backdrop -------------------------------------------
+     A backdrop-filter can only blur what is genuinely behind the element, and
+     behind a panel that covers the whole area there is nothing to blur. Every
+     implementation that fakes glass over a flat surface therefore PAINTS the
+     backdrop instead of sampling it:
+
+       · Windows 11 Mica / Acrylic  — samples the wallpaper, blurs it, tints it
+       · macOS Big Sur              — blurs the desktop behind the window
+       · self-contained panels      — synthesise an "aurora"/mesh: two or three
+                                      very large, very low-contrast radial
+                                      gradients standing in for a wallpaper
+
+     That is the answer to "what background do you add". The gradients alone
+     still look like a flat fill, though, so the second ingredient matters as
+     much as the first: a fine grain. Grain is what makes a smooth gradient read
+     as a MATERIAL rather than a slightly wrong solid, and it also kills the
+     banding that low-contrast gradients produce on a dark theme.
+
+     Both live at z-index:-1 so they sit behind every panel surface; `.app` itself
+     must not paint a background or it would cover them. */
+  .app { position: relative; }
+  .app::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
     background:
-      radial-gradient(1200px 620px at 12% -10%, color-mix(in srgb, var(--tb-accent) 9%, transparent), transparent 62%),
-      radial-gradient(900px 520px at 108% 8%, color-mix(in srgb, var(--tb-text) 5%, transparent), transparent 58%),
-      var(--tb-glass);
+      radial-gradient(1150px 620px at 6% -14%, color-mix(in srgb, var(--tb-accent) 22%, transparent), transparent 62%),
+      radial-gradient(900px 520px at 106% 2%, color-mix(in srgb, var(--tb-accent) 11%, transparent), transparent 60%),
+      radial-gradient(1000px 760px at 48% 120%, color-mix(in srgb, var(--tb-text) 6%, transparent), transparent 64%),
+      var(--tb-bg-1);
+  }
+  .app::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    opacity: .38;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E");
   }
   .bar, .foot {
     background: var(--tb-glass-1);
@@ -553,8 +589,12 @@
     -webkit-backdrop-filter: var(--tb-glass-blur);
     border-right-color: var(--tb-glass-line);
   }
-  .list { background: var(--tb-glass); }
-  .reader { background: transparent; }
+  /* Translucent CHROME, opaque CONTENT.
+     This is the rule that fixes "too many glass layers made the text unreadable":
+     stacking alpha layers multiplies toward opaque anyway, while destroying the
+     contrast that text needs. So the surfaces that carry text are opaque, and only
+     the chrome around them is translucent. */
+  .list, .reader { background: var(--tb-bg); }
   .reader-head {
     background: var(--tb-glass);
     backdrop-filter: var(--tb-glass-blur-strong);
@@ -4560,6 +4600,29 @@ function pollEvents () {
   }).catch(function () {})
 }
 
+// A nearly-white "brand" colour is not a brand hue. DSH's dark theme reports one
+// for --dsw-alias-brand-primary, and mirroring it breaks every place the panel
+// tints with --tb-accent or writes text in it.
+function isPaleColor (value) {
+  var v = String(value || '').trim()
+  var hex = /^#([0-9a-f]{6})$/i.exec(v)
+  if (hex) {
+    var n = parseInt(hex[1], 16)
+    return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) > 200
+  }
+  var rgb = /^rgba?\(([^)]+)\)/.exec(v)
+  if (rgb) {
+    var parts = rgb[1].split(',')
+    return (0.2126 * parseFloat(parts[0]) + 0.7152 * parseFloat(parts[1]) + 0.0722 * parseFloat(parts[2])) > 200
+  }
+  // getComputedStyle can hand back the modern form: color(srgb 0.97 0.98 0.98)
+  var srgb = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(v)
+  if (srgb) {
+    return (0.2126 * parseFloat(srgb[1]) + 0.7152 * parseFloat(srgb[2]) + 0.0722 * parseFloat(srgb[3])) * 255 > 200
+  }
+  return false
+}
+
 function isDarkColor (value) {
   var v = String(value || '').trim()
   var hex = /^#([0-9a-f]{6})$/i.exec(v)
@@ -4651,6 +4714,15 @@ function mirrorTheme () {
     for (var i = 0; i < names.length; i++) {
       var value = readToken(win, hosts, names[i])
       if (!value) continue
+      // A brand token that is nearly WHITE is not a brand hue, and
+      // --dsw-alias-brand-primary is exactly that in DSH's dark theme: it is really
+      // the foreground that sits ON a brand surface, not the brand colour. The
+      // panel uses --tb-accent as a TINT and as TEXT in about fifteen places —
+      // unread rows, the selected folder, AI buttons, the user's chat bubble — so
+      // mirroring that white turned all of them into pale washes. The visible
+      // symptom was an unread subject rendering white-on-white and unreadable.
+      // A pale accent is not an accent: keep this panel's own hue instead.
+      if (names[i] === '--dsw-alias-brand-primary' && isPaleColor(value)) continue
       document.documentElement.style.setProperty(names[i], value)
       var targets = map[names[i]]
       for (var t = 0; t < targets.length; t++) {
